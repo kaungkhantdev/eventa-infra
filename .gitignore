@@ -1,0 +1,17 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+.terraform.lock.hcl
+
+# Helm
+charts/**/charts/
+*.tgz
+
+# Secrets — never commit; these come from the vault via ExternalSecret
+*.pem
+*.key
+kubeconfig*
