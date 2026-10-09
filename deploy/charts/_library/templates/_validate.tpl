@@ -374,9 +374,11 @@ twice. Consumers dedupe on message id, but only AFTER the first copy has
 finished — two copies delivered concurrently are both handled. For a
 registration that means two confirmation emails to the same buyer.
 
-Note that devops-infrastructure.md §3.2 tabulates `relay` at a minimum of 2
-replicas. That entry is a defect in the document: the code it describes cannot
-support it. This guard exists so the defect cannot reach a cluster.
+Note that the specification agrees with this refusal rather than being
+contradicted by it: devops-infrastructure.md §3.2 tabulates `relay` at
+"exactly 1 — a fixed count, not a minimum", says "the `relay` is a singleton and
+must not be scaled", and names this guard as what enforces it. The reason is the
+reader above, not the table; the table merely records it.
 
 To lift the guard: land `FOR UPDATE SKIP LOCKED` in the reader
 {{- if .evidence }} ({{ .evidence }}){{ end }}, then drop `singleton` from this
@@ -390,12 +392,13 @@ hpa.enabled is true (minReplicas {{ .minReplicas }}) on a workload declared a
 singleton, so this chart would ship an autoscaler whose whole job is to create
 the second replica that must not exist.
 
-devops-infrastructure.md §6 lists "relay scales with outbox lag", and that is
-the right design once the reader takes a row lock. Until
-`FOR UPDATE SKIP LOCKED` lands in
+The reason is the reader, not a table. Until `FOR UPDATE SKIP LOCKED` lands in
 eventa-relay/src/relay/outbox-reader.repository.ts:25, a second replica
 double-publishes every outbox row (see eventa-relay/src/main.ts:20), so the
-relay ships with no HPA at all.
+relay ships with no HPA at all. devops-infrastructure.md says the same:
+§3.2 gives the relay the scaling signal "None — no HPA", §6's Pods row reads
+"HPA per service, except the singleton `relay` which has none", and §6's
+Consumers row says the relay "does not scale at all".
 
 Outbox lag is still the signal to watch — it just pages a human instead of
 adding a replica. devops-observability-sre.md §2 sets the thresholds: warn above

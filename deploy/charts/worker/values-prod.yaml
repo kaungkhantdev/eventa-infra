@@ -61,8 +61,9 @@ config:
     # mail provider actually holds, or mail is accepted by the provider, counted
     # as sent, and junked at the recipient.
     #
-    # Why a REPLACE_ token here while the hostnames below and in the other four
-    # charts use the reserved zone `eventa.invalid`: this chart's own guard
+    # Why a REPLACE_ token here while the hostname below and the ones in ../api,
+    # ../checkin and ../web use the reserved zone `eventa.invalid`: this chart's
+    # own guard
     # refuses a `.invalid` sender under NODE_ENV=production (templates/_guards.tpl,
     # check 4), and it is right to. A syntactically valid address on a domain
     # that resolves nowhere is accepted by the provider and junked silently at
@@ -82,8 +83,10 @@ config:
     # same undecided domain in its own placeholder form: `.invalid` is reserved
     # by RFC 2606 and resolves nowhere, so a link that reaches a recipient
     # before the domain is settled fails in the browser rather than landing on
-    # somebody else's site. All five charts share this zone; see
-    # ../web/values-prod.yaml for the reasoning and change it everywhere at once.
+    # somebody else's site. ../api, ../checkin and ../web share this zone; see
+    # ../web/values-prod.yaml for the reasoning, and for why changing it is ten
+    # lines across those four files rather than one line each. This chart's
+    # share is the single line below.
     PUBLIC_WEB_URL: https://www.eventa.invalid
 
 global:

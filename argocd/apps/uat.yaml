@@ -10,32 +10,35 @@
 # nothing further to approve, and these children sync themselves like dev's
 # and staging's.
 #
-# TWO OF THE FIVE CHILDREN CANNOT SYNC TODAY. `checkin` and `worker` have no
-# `values-uat.yaml`, so their Applications fail with "values file does not
-# exist" until someone writes one. `web`, `relay` and `api` have theirs.
-# ../README.md says what each remaining file has to contain, and why the CIDR
-# scheme has to be settled before either is written.
+# ALL FIVE CHILDREN SYNC. Every chart now ships a `values-uat.yaml`, so each of
+# the five Applications in `argocd/environments/uat` resolves its `valueFiles`
+# and renders: web 8 objects, api 12, checkin 9, worker 7, relay 6 — the same
+# counts as staging and prod. ../README.md, "Verifying a change", has the loop
+# that checks this.
 #
-# Keeping the reference rather than setting `ignoreMissingValueFiles` is a
-# choice about the error message, not about safety, and the hazard this comment
-# used to claim does not exist. `ignoreMissingValueFiles` would NOT render a
-# production baseline into `eventa-uat`:
+# `checkin` and `worker` were the last two. Both were built with dev, staging and
+# prod only and reported "values file does not exist" on every sync attempt;
+# their Applications' own headers record what that cost each of them. The
+# references were kept through that period rather than quieted with
+# `ignoreMissingValueFiles`, which was a choice about the error message and not
+# about safety:
 #
-#   * Both charts refuse to render on `values.yaml` alone. `checkin` fails its
-#     values schema with "at '/image': missing property 'tag'"; `worker` fails
-#     the same schema at `/image`, whose `tag` is present but empty. (`api`,
-#     before it had an overlay, got past the schema and failed in its templates
-#     on `canary.analysis.prometheusAddress`.) So there is no baseline-only
-#     manifest for the flag to let through.
+#   * Neither chart could have rendered a baseline into `eventa-uat` even with
+#     the flag set. Both refuse on `values.yaml` alone, failing their values
+#     schema at `/image` with "'anyOf' failed" — `checkin` reporting "missing
+#     property 'tag'" and "missing property 'digest'", `worker` reporting "at
+#     '/image/tag': minLength: got 0, want 1" alongside the same missing
+#     `digest`. (`api`, before it had an overlay, got past the schema and failed
+#     in its templates on `canary.analysis.prometheusAddress`.)
 #   * No baseline carries a secret path either. §5 makes
 #     `externalSecret.dataFrom` per-environment, so it is deliberately absent
 #     from every chart's `values.yaml`; `checkin`'s and `worker`'s baselines
 #     enable `externalSecret` with no path, which the library refuses outright.
 #
-# What the flag would actually cost is the message: it trades an error that
-# names the missing file for one that names a path in a JSON Schema. The
-# file-not-found message is the one that tells the reader what to do next, which
-# is the whole reason the reference stays.
+# Both refusals still stand, which is what makes a deleted or renamed overlay a
+# failed render rather than a baseline-only deploy. Leave `ignoreMissingValueFiles`
+# unset: it would trade an error that names a missing file for one that names a
+# path in a JSON Schema, and the first is the one that tells the reader what to do.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:

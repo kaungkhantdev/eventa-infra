@@ -1,21 +1,34 @@
-# THIS APPLICATION CANNOT SYNC YET. deploy/charts/worker has no values-uat.yaml,
-# so the `valueFiles` entry below resolves to nothing and Argo CD reports
-# "values file does not exist" instead of deploying.
+# This Application syncs. `deploy/charts/worker/values-uat.yaml` exists, so the
+# `valueFiles` entry below resolves and `helm template worker
+# deploy/charts/worker -f deploy/charts/worker/values-uat.yaml -n eventa-uat`
+# renders — 7 objects, the same count as every other environment.
 #
-# The reference stays anyway, because that error names the fix. `web` and
-# `relay` both ship a values-uat.yaml and both explain in its header why a
-# fourth overlay was needed; these three charts were built with dev, staging and
-# prod only.
+# It did not always. This chart was built with dev, staging and prod only, and
+# for a while this Application reported "values file does not exist" on every
+# sync attempt — which mattered beyond the worker itself, because this image is
+# what declares and binds the `eventa.worker` queue. With no consumer in the
+# namespace a stakeholder's registration produced a green page and no email: the
+# api wrote its outbox row and the relay published it, and the topic exchange had
+# nothing to route to. That overlay now exists and its header records the whole
+# chain.
 #
-# Nothing here is unsafe either way. This chart refuses to render on
-# `values.yaml` alone — it fails its values schema at `/image`, whose `tag` is
-# present but empty and whose `digest` is unset — so there is no baseline-only
-# manifest that could land in `eventa-uat`. But that refusal reports a JSON
-# Schema path, while a missing-file error names the file that is missing.
+# The reference was kept through that period rather than quieted with
+# `ignoreMissingValueFiles`, because the missing-file error named the fix and the
+# flag would only have swapped it for a JSON Schema path.
 #
-# Do not reach for `ignoreMissingValueFiles` to quiet this: it would not make
-# the Application sync, only swap the message that names the file for the one
-# that does not. ../../apps/uat.yaml records that in full.
+# All four of §7's parity environments now have an overlay in this chart, so
+# every one of UAT's five Applications renders. What is still a placeholder here
+# is what is a placeholder in every environment — the image tag until the first
+# promotion, the data-subnet CIDRs until the Terraform network module exists, and
+# `serviceAccount.annotations`, which stays empty because §1.1 names the
+# workload-identity mechanism without naming a cloud. ../../README.md, "Known
+# gaps", has the list.
+#
+# The chart still refuses to render on `values.yaml` alone: the baseline fails
+# its values schema at `/image` with "'anyOf' failed", reporting "at
+# '/image/tag': minLength: got 0, want 1" alongside "missing property 'digest'".
+# So a deleted or renamed overlay cannot degrade into a baseline-only manifest
+# landing in `eventa-uat` — it fails the render instead.
 # ../../README.md says what the overlay has to contain.
 
 # worker — the RabbitMQ consumers: notifications, calendar, indexing

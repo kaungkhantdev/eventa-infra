@@ -1,0 +1,187 @@
+# worker — UAT (namespace `eventa-uat`, devops-infrastructure.md §3.1, §7).
+#
+# §7 names UAT one of the FOUR parity environments — four, not three: business
+# and stakeholder acceptance, on curated realistic data that is masked, reached
+# by gated promotion, which devops-ci-cd.md §4.1 defines as a manual approval
+# from product and QA. Access is "product + selected stakeholders" (§7).
+#
+# Why this chart needs a file of its own:
+#
+#   1. `../../../argocd/environments/uat/worker.yaml` already names
+#      `values-uat.yaml` in its `valueFiles`, so that Application could not sync
+#      and reported "values file does not exist" instead of deploying. The
+#      reference was kept deliberately, because that error names the fix.
+#   2. Most of what a stakeholder accepts is this service's work. Every
+#      confirmation, reminder and announcement is sent from this image, and the
+#      calendar and indexing consumers live here too (§3.2). With no worker
+#      release in `eventa-uat`, a stakeholder registering for a curated event
+#      gets a green page and no email: the api writes its outbox row and the
+#      relay publishes it, but this image is what declares and binds
+#      `eventa.worker` (eventa-worker/src/rabbitmq/consumer.service.ts:138,155),
+#      so with no consumer deployed the topic exchange has nothing to route to
+#      and drops the message. Nothing fails, nothing queues, and the acceptance
+#      test fails for a reason that is not in the release under test.
+#
+# Derived from values-staging.yaml, the nearest parity environment, and
+# deliberately staying production-shaped in the same way: NODE_ENV stays
+# `production` (values.yaml), which keeps eventa-worker's two production
+# refusals armed (src/config/env.validation.ts:148, :182) and keeps the mail
+# path identical to prod's. What differs is what §7 allows — "sizing, replica
+# counts, retention, and data sensitivity" — plus the coordinates: the image
+# reference, the secret path, the CIDRs, and where the mail goes.
+
+environment: uat
+
+image:
+  # PLACEHOLDER, as in every other environment's file. Gated promotion rather
+  # than the bot that moves staging's line: devops-ci-cd.md §4.1 promotes into
+  # UAT behind a manual product/QA approval of the PR that bumps this tag, and
+  # §3 moves the identical signed digest that passed staging — "promotion is by
+  # digest, not rebuild. The identical image scanned and signed in CI is what
+  # runs in dev → staging → UAT → prod."
+  #
+  # The all-zero SHA is a tag no build will ever produce, so a release synced
+  # before its first promotion fails to pull its image — visibly, at once —
+  # rather than quietly running whatever else is in the registry.
+  tag: sha-0000000
+
+serviceAccount:
+  # `/eventa/uat/*` only. Empty for the reason values-prod.yaml gives and not
+  # because UAT needs less: the workload-identity annotation KEY is
+  # cloud-specific, and §1.1 names the mechanism neutrally
+  # ("IRSA/workload-identity") because no provider has been chosen, so it cannot
+  # be written yet without picking one.
+  annotations: {}
+
+externalSecret:
+  # §5's per-environment path, and the per-environment path IS the
+  # least-privilege boundary: the IAM grant behind `/eventa/uat/*` is scoped to
+  # this namespace via workload identity, so a pod here cannot read
+  # `/eventa/prod/worker` even if somebody pastes that path into this file.
+  #
+  # `extract` pulls every key at the path — DATABASE_URL, RABBITMQ_URL,
+  # REDIS_URL and the mail credentials SMTP_HOST / SMTP_USER / SMTP_PASSWORD —
+  # so the set of secrets the worker needs is asserted in one place only, its
+  # own env schema. Unlike ../checkin, which extracts the api's path because it
+  # is the api process, the worker is its own image with its own credentials and
+  # so gets its own path here.
+  dataFrom:
+    - extract:
+        key: /eventa/uat/worker
+
+config:
+  env:
+    # LOG_LEVEL is deliberately absent, which leaves values.yaml's `info` — it
+    # does NOT take staging's `debug`. This is the data-sensitivity half of §7's
+    # list. staging runs the DAST and perf checks, both of which read logs to
+    # explain a failure, on an anonymised dataset. UAT's data is "curated
+    # realistic; masked" — masked, but modelled on real attendees — and its
+    # users are product and selected stakeholders, so handler-level logging of
+    # their registrations and messages would put more into the log pipeline than
+    # an acceptance test needs.
+    #
+    # EMAIL_FROM below has to be set and has to be a resolvable domain, because
+    # NODE_ENV is `production` here: templates/_guards.tpl checks 3 and 4 refuse
+    # to render a production worker with no sender or with one on a
+    # non-resolving domain. Without it eventa-worker would fall back to
+    # `Eventa <no-reply@eventa.local>` (src/config/env.validation.ts:99), which
+    # is syntactically valid on a domain that does not exist — so every message
+    # would be accepted by the provider, counted as sent, and junked at the
+    # recipient with no error anywhere in the cluster.
+    #
+    # Mail from this environment must reach a SINK and not an attendee.
+    # devops-ci-cd.md §1.1 sends non-production mail to a trap, and §7 allows no
+    # raw production PII here — a curated dataset mailed to the addresses it was
+    # modelled on would defeat both at once, and UAT is the environment whose
+    # data looks realest. The sink's hostname and credentials arrive at
+    # `/eventa/uat/worker` as SMTP_HOST/USER/PASSWORD, so moving UAT to a
+    # different trap is a secrets-manager change and not a chart change.
+    #
+    # NOTE if the sink is ever moved in-cluster (Mailpit rather than a hosted
+    # trap): `networkPolicy.egress.external` in values.yaml carves out every
+    # private range, so it will NOT reach a pod. Replace it with a
+    # `networkPolicy.egress.toPods` entry naming the sink's namespace and port.
+    EMAIL_FROM: Eventa UAT <no-reply@uat.eventa.dev>
+    # The links written into that mail: the survey link in the post-event
+    # thank-you (US-MSG-08), the tickets in a reminder, the page a waitlist
+    # offer is paid on (US-REG-04). It points at UAT so that a stakeholder
+    # following a link out of the sink acts on UAT and not on production.
+    #
+    # It must be ../web/values-uat.yaml's Ingress host exactly, which is the
+    # same host ../api/values-uat.yaml and ../checkin/values-uat.yaml name as
+    # PUBLIC_WEB_URL — all four charts in this namespace agree on one answer.
+    # `eventa.dev` is the one non-production domain a document actually names
+    # (devops-ci-cd.md §1.1's `pr-<n>.preview.eventa.dev`); production uses the
+    # reserved `eventa.invalid` placeholder because no document names a
+    # production hostname at all.
+    #
+    # Optional to eventa-worker, and the failure is quiet rather than loud:
+    # without it the post-event thank-you job declines to run and says why
+    # (src/config/env.validation.ts:55). Same caveat as prod — mail from this
+    # domain is only delivered once the provider holds SPF and DKIM records for
+    # it (see values-prod.yaml).
+    PUBLIC_WEB_URL: https://uat.eventa.dev
+
+hpa:
+  # minReplicas is deliberately absent, so the baseline 2 stands. §8 lowers
+  # non-prod replica COUNTS at the ceiling, not at the floor, for the two
+  # reasons values-staging.yaml gives: devops-observability-sre.md §7.2 asks for
+  # "≥ 2 replicas per Deployment" without carving out non-production, and §3.3's
+  # `minAvailable: 50%` against a floor of 1 rounds up to 1 available and leaves
+  # zero voluntary disruptions — so every node drain in this namespace would
+  # block until somebody deleted the pod by hand.
+  #
+  # The ceiling is the one sizing change: 3, between dev's 2 and staging's 4 and
+  # nowhere near prod's 10. staging's ceiling is picked to be reachable in a
+  # perf run, because §7 is what puts the perf checks there; UAT's only has to
+  # absorb the burst that a seeded announcement makes while a handful of
+  # stakeholders are accepting, and §8 asks the non-production environments to
+  # run smaller counts and to give the capacity back afterwards.
+  maxReplicas: 3
+  # Clears the queue-depth metric from values.yaml, leaving CPU alone — the same
+  # change values-dev.yaml makes, and for the same mechanism rather than for
+  # tidiness.
+  #
+  # `rabbitmq_queue_messages` is an EXTERNAL metric, and no document in this
+  # repository names the Prometheus adapter that would have to resolve it;
+  # values.yaml also notes that RabbitMQ's own plugin calls the same quantity
+  # `rabbitmq_detailed_queue_messages`, so even the name is unconfirmed. While
+  # any metric read is failing, the HPA stops scaling IN altogether — so one
+  # acceptance session's burst would scale the worker out on CPU and pin it
+  # there between sessions, which is the opposite of §8's "non-prod scales
+  # down/off outside working hours".
+  #
+  # values-staging.yaml deliberately keeps it, because staging is prod-like by
+  # design (§7) and is where a missing adapter rule should be discovered. Add it
+  # back here the day that rule lands, so UAT keeps exercising the signal prod
+  # relies on.
+  metrics: []
+
+# The data subnets for eventa-uat: 10.<env>.<az>.0/24 with the env octet 30, and
+# AZ 1 alone because §8 runs dev, staging and UAT on single-node data services —
+# there is no standby in another zone to allow. Production lists all three zones
+# instead, because §4 gives it a multi-AZ Postgres standby and a three-node
+# RabbitMQ cluster, so its endpoint moves between zones. The scheme is shared by
+# all five charts and written out in full in values.yaml; change it in all of
+# them in one commit, or not at all.
+#
+# These are the same three ranges ../api/values-uat.yaml, ../checkin and
+# ../relay name for this environment — §2 puts all three managed stores in the
+# same per-AZ private data subnets, and what keeps the three allows distinct is
+# the per-store port in ../_library/templates/_defaults.tpl.
+#
+# PLACEHOLDER — the Terraform network module's output for this environment
+# (§1.1), which does not exist yet because no provider has been chosen. This is
+# the shape, not the address. A too-narrow value fails loudly: readiness cannot
+# reach the database and the rollout halts. A too-broad one fails silently, by
+# granting the worker reach into the rest of the VPC. Review it against the
+# module output when it exists, not against the neighbouring environment.
+global:
+  eventa:
+    network:
+      postgresCidrs:
+        - 10.30.1.0/24
+      redisCidrs:
+        - 10.30.1.0/24
+      rabbitmqCidrs:
+        - 10.30.1.0/24

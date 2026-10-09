@@ -10,8 +10,9 @@ ExternalSecret, a ServiceAccount, a one-replica Deployment, a PDB and a
 NetworkPolicy.
 
 The guard runs first and emits nothing. It fails the render if anybody turns the
-singleton off — see `_guard.tpl` for the reader that cannot be scaled yet and
-the file:line that says when it can be.
+singleton off, enables the migration Job, or sets `replicaCount` — see
+`_guard.tpl` for the reader that cannot be scaled yet and the file:line that
+says when it can be.
 */}}
 {{- include "relay.guard" . -}}
 {{- include "eventa-library.workload" . }}

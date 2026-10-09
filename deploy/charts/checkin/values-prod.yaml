@@ -47,11 +47,15 @@ config:
     # plausible-looking production domains, across four charts that deploy into
     # one namespace.
     #
-    # All five charts now use the single placeholder zone `eventa.invalid`:
-    # reserved by RFC 2606 and resolving nowhere, so a forgotten value fails
-    # closed and visibly rather than answering on a name nobody chose.
-    # ../web/values-prod.yaml carries the reasoning in full. When the real
-    # domain is decided, change it in all five charts in one commit.
+    # Every chart that names a hostname now uses the single placeholder zone
+    # `eventa.invalid`: reserved by RFC 2606 and resolving nowhere, so a
+    # forgotten value fails closed and visibly rather than answering on a name
+    # nobody chose. ../web/values-prod.yaml carries the reasoning in full.
+    #
+    # When the real domain is decided it is ten lines in four values-prod.yaml
+    # files, in one commit — four here (the two URLs below, CORS_ORIGINS, and
+    # this chart's Ingress host), four in ../api, one in ../web and one in
+    # ../worker. ../relay has none: it serves no HTTP and writes no links.
     PUBLIC_WEB_URL: https://www.eventa.invalid
     PUBLIC_API_URL: https://api.eventa.invalid
     # The door app is served from the public web origin, so that is the only
@@ -84,8 +88,9 @@ ingress:
   # Ingress that is never picked up by anything. An unset class uses the
   # cluster's default IngressClass; set it here once the controller is chosen.
   hosts:
-    # PLACEHOLDER, in the one undecided-domain zone all five charts use — see
-    # config.env above.
+    # PLACEHOLDER, in the one undecided-domain zone every chart that names a
+    # hostname uses — see config.env above. This is the FOURTH and last of this
+    # chart's four lines on that zone.
     - host: checkin.eventa.invalid
       paths:
         - path: /api/v1

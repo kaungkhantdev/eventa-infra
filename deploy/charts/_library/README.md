@@ -43,6 +43,15 @@ dependencies:
 cp ../_library/values.contract.schema.json values.schema.json
 ```
 
+That command is the whole update for `web`, `checkin` and `worker`, whose copies
+are byte-identical to this file. **It is not safe for `api` or `relay`**, which
+have diverged on purpose: api adds `rollout` and `canary` for its Argo Rollout
+(`devops-ci-cd.md` §4.2), and relay relaxes `ports` to `minItems: 0` because it
+binds no socket at all. Merge a contract change into those two rather than
+overwriting them, and keep a `global.*` key in step across all five — Helm
+validates each chart's values against its own schema only, so a key this
+contract gains is unvalidated in any chart that did not get it.
+
 It is not named `values.schema.json` *here* because Helm applies a dependency's
 schema to that dependency's own values sub-tree. A schema with required
 properties at this path would be checked against the library's (empty) coalesced
@@ -153,27 +162,135 @@ no position; both charts state their own and say why.
 
 ### Network
 
-Default-deny per namespace, then explicit allows (§3.3). Two things shape it:
+Default-deny per namespace, then explicit allows (§3.3). Five things shape what
+the library renders:
 
 **The data stores are not pods.** Managed Postgres, Redis and RabbitMQ sit in
 private data subnets (§2), so their allows are `ipBlock` CIDRs that come from
 the Terraform network module per environment:
 
 ```yaml
+# eventa-staging, which §8 runs on single-node data services — one AZ to allow.
 networkPolicy:
   egress:
     postgres: { enabled: true, cidrs: [10.20.1.0/24] }
-    rabbitmq: { enabled: true, cidrs: [10.20.5.0/24] }
+    rabbitmq: { enabled: true, cidrs: [10.20.1.0/24] }
 ```
+
+Both lists are the same because §2 puts all three stores in the same per-AZ
+data subnets; what keeps the two allows distinct is the per-store port. The
+five charts use one placeholder scheme, `10.<env>.<az>.0/24`, and the real
+ranges come out of the Terraform network module — so check an existing
+`values-<env>.yaml` rather than copying from here.
 
 Set them once for all five charts with
 `global.eventa.network.{postgres,redis,rabbitmq}Cidrs` instead if an umbrella
-chart owns the values.
+chart owns the values. `global.eventa.network.nodeCidrs` works the same way for
+the node ranges of `ingress.fromNodes` below — the one list under that key that
+is an app subnet rather than a data subnet.
 
 **An empty rule allows everything.** A NetworkPolicy peer list that renders
 empty does not deny — it permits every destination. So enabling a data-store
 egress with no CIDR is a **render error**, not a default, and a `fromPods` /
-`toPods` entry with no selector is refused for the same reason.
+`toPods` entry with no selector is refused for the same reason. The same trap
+sits one field over: `ports: []` on a rule does not restrict it to no port, it
+matches **every** port, so enabling a peer on a workload that declares no
+`values.ports` is refused too.
+
+**The two ingress peers ship placeholder labels, and they have to be replaced.**
+A peer here must select *pods*, not just a namespace: §3.1 puts Argo CD,
+External Secrets, the ingress controller and the observability agents in one
+`platform` namespace, so a namespace-only peer admits all four — which is how
+the Argo CD repo-server would get a direct route to `api:3000`, past the CDN →
+WAF → load balancer path that §2's table calls the "only ingress path into the
+VPC". `_validate.tpl` refuses the namespace-only form outright. But the label
+*value* cannot be known yet, because §3.1 names neither the ingress controller
+nor the observability stack and neither has been chosen, so `_defaults.tpl`
+ships two peers with the right shape and deliberately wrong values:
+
+```yaml
+networkPolicy:
+  ingress:
+    fromIngressController:
+      podSelector: { app.kubernetes.io/name: REPLACE-ME-ingress-controller }
+    fromMetricsScraper:
+      podSelector: { app.kubernetes.io/name: REPLACE-ME-metrics-scraper }
+```
+
+No chart in this repo replaces them, so both strings appear verbatim in every
+rendered policy and in any Argo CD diff. **Until they are replaced the allow
+matches nothing and ingress fails closed** — no pod carries that label. Closed
+is the safe direction for a policy and the marker is loud rather than silent,
+but the consequence is real wherever the namespace-wide default-deny is on — and
+the `api` chart enables it in its baseline, so it is on wherever the api runs.
+Inbound traffic to web, api and checkin is dropped, and since
+`fromMetricsScraper` is on by default for all five, so is every Prometheus
+scrape (`devops-observability-sre.md` §1). Replace both in the chart's values in
+the same change that picks an ingress controller and an observability stack.
+
+**Every rendered port is a number, never a named port.** `NetworkPolicyPort`
+accepts a name, but nothing in the API guarantees an implementation resolves
+it — the CNI would resolve it per destination pod, and no CNI has been chosen
+(§3 says only "managed Kubernetes" and nothing in `devops-infrastructure.md`
+names a network plugin), which is the same bet the FQDN note below refuses to
+make. So inbound names are resolved here instead, against `values.ports`, where
+the table is in hand: `ports: [{ port: http }]` on an ingress rule renders as
+the number that chart declares for `http`, and a name that is not declared is a
+render error rather than a rule that quietly matches no traffic. A name in an
+*egress* port list is refused instead, because there the destination is an
+`ipBlock` or another workload's pods and this chart does not have their port
+table — `web/values.yaml` writes the api's `3000` out for that reason.
+Inbound resolution has a second justification worth knowing: the policy selects
+on `selectorLabels`, which by design also covers the migration Job's pods, and
+the `migrate` container declares no ports at all — so on the api, the one chart
+with a Job, `http` would resolve to 3000 for the service's pods and to nothing
+for the Job's. Inbound is not even one pod set, which is a second reason not to
+leave a name in the manifest for someone else to resolve.
+
+**Kubelet probe traffic is not covered unless you ask for it.** Every rendered
+policy declares both policy types, and every *ingress* peer the five charts
+declare is a pod selector — so a readiness or liveness probe matches no rule:
+the kubelet sends it from the node's own address, and a
+`NetworkPolicyPeer` can only be a `podSelector`, a `namespaceSelector` or an
+`ipBlock`. A node is neither a pod nor in a namespace, so the API has no peer
+that means "the kubelet". `networkPolicy.ingress.fromNodes` is the opt-in allow,
+and an `ipBlock` over the private app subnets is the only form it can take —
+§2's table places the Kubernetes worker nodes in those subnets, which are *not*
+the data subnets the egress allows above use:
+
+```yaml
+networkPolicy:
+  ingress:
+    fromNodes:
+      enabled: true
+      # Placeholder. The real ranges are the app subnets of §2, per environment,
+      # from the same Terraform network module as the data-store CIDRs; empty
+      # here falls back to global.eventa.network.nodeCidrs.
+      cidrs: [10.40.101.0/24, 10.40.102.0/24]
+      ports: []   # empty → the container ports this chart declares, by number
+```
+
+It is **off by default** for three reasons. Enabling it widens ingress, which
+should be a decision and not a default. Its CIDRs are a per-environment value
+from the same Terraform network module as the data-store ranges, so there is
+nothing honest to default them to — and `enabled: true` with no CIDR in either
+place is a render error, exactly as an empty data-store list is, because an
+ingress rule with an empty `from` admits every source rather than none. And most
+of the time it is unnecessary: whether a default-deny namespace blocks probes at
+all is a property of the CNI rather than of the API, and implementations
+commonly do not subject traffic originating on the node to pod policy, which is
+why applying a default-deny usually does not break probes.
+
+That last point is the caveat, because it cuts both ways and **no CNI has been
+chosen here**. On an implementation that exempts node-sourced traffic,
+`fromNodes` buys nothing and only widens the policy. On one that applies pod
+policy to it, the HTTP readiness probes that web, api, checkin and worker all
+use ([Probes](#probes) above; the relay has none) fail the moment the
+default-deny lands, every replica goes NotReady, and the NetworkPolicy is the
+last place anyone looks. Turn it on if probes are observed failing under the
+default-deny, not pre-emptively — and note that an `exec` probe is not network
+traffic and needs no allow at all, which is why a workload that declares no
+container port is refused here rather than given a rule.
 
 `egress.external` covers Stripe, PromptPay and the comms providers through NAT.
 Plain NetworkPolicy cannot name a destination by hostname — FQDN rules need a
@@ -216,11 +333,14 @@ in `podAnnotations` per environment rather than being invented here.
 
 ## The relay singleton guard
 
-**`devops-infrastructure.md` §3.2 tabulates `relay` at a minimum of 2 replicas.
-That entry is a defect in the document, and this chart deliberately does not
-implement it.**
+**The relay's outbox reader takes no row lock, so a second replica publishes
+every outbox row twice. That, and not a document, is why this chart pins one
+replica.** `devops-infrastructure.md` §3.2 agrees: it tabulates `relay` at
+"exactly 1 — a fixed count, not a minimum" with the scaling signal "None — no
+HPA", and its closing paragraph names this chart's render-time refusal as the
+mechanism that holds the line. Chart and specification say the same thing.
 
-The relay's outbox reader takes no row lock. Verified in the source:
+Verified in the source rather than taken from the table:
 
 - `eventa-relay/src/relay/outbox-reader.repository.ts:25` selects pending rows
   on `isNull(outboxEvents.publishedAt)` with no `FOR UPDATE SKIP LOCKED`.
@@ -269,7 +389,8 @@ because it makes the relay the one workload a node drain cannot fully automate.
 
 ## Per-workload reference values
 
-From §3.2 and §3.3, with the relay's replica count per the guard above.
+Straight from §3.2 and §3.3 — including the relay's row, which §3.2 now states
+as "exactly 1 — a fixed count, not a minimum" with the scaling signal "None".
 
 | workload | component | image | replicas (prod) | HPA signal | cpu req/limit | mem req/limit | sync wave |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -286,8 +407,8 @@ a name invented here would produce an HPA that reports `<unknown>` forever.
 
 Below are the keys that define the shape of the guard, copied verbatim from the
 real [`../relay/values.yaml`](../relay/values.yaml) with its comments and its
-environment-independent remainder (`resources`, `config.env`,
-`externalSecret`, `networkPolicy`, `argocd.syncWave`) left out. **Read that file
+environment-independent remainder (`resources`, `config.env`, `externalSecret`,
+`migrationJob`, `networkPolicy`, `argocd.syncWave`) left out. **Read that file
 before copying any of this.** Every line here that looks like an omission is
 argued there at length, and three of them are the opposite of what a reader
 would guess.
@@ -352,10 +473,23 @@ actively wrong:
 ```sh
 helm lint deploy/charts/_library
 
-# Render through a consumer. A library chart cannot be templated directly;
-# use a throwaway chart outside this repo that depends on it.
-cd /tmp/render-test/relay && helm dependency update . && helm template relay . -n eventa-prod
+# Render through a consumer: a library chart cannot be templated directly, and
+# the five that depend on it are the consumers. `charts/` is git-ignored, so
+# re-resolve the dependency after editing anything under templates/ — the
+# consumer renders the packaged copy, not these files.
+helm dependency update deploy/charts/relay
+helm template relay deploy/charts/relay -f deploy/charts/relay/values-prod.yaml -n eventa-prod
 ```
+
+Pair every chart with exactly one `values-<env>.yaml` and the matching
+namespace. None of the five renders bare today, and that is the right
+direction rather than a gap: web, checkin, relay and worker fail their own
+`values.schema.json` on the image reference, which belongs to the environment
+(`devops-ci-cd.md` §4.1 makes promotion "a PR that bumps the target env's image
+digest", so a tag sitting in a baseline would be a version nobody promoted),
+and the api fails its own chart's validation because its canary gate has no
+Prometheus address until an environment supplies one. A bare render that
+succeeded would be a manifest no environment would ever apply.
 
 `kubectl apply --dry-run=client` is **not** usable here: it resolves every
 `kind` through API discovery against a live server, so with no cluster it fails

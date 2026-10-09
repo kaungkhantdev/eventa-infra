@@ -82,12 +82,15 @@ Rollback is the same mechanism in reverse: revert the commit that moved the tag
 (§8.1). Because promotion is by digest, the exact previously-running image
 returns.
 
-### Why UAT auto-syncs although §7 calls it "gated"
+### Why UAT auto-syncs although §7 gates it
 
-The two documents are precise about where each gate sits. ci-cd §4.1 gates UAT
-on a "manual approval (PO/QA)" of the **promotion**; §1.3 and §4.1 reserve a
-gated **sync** for production alone. So UAT's gate is the approval on the PR
-that moves its tag, and once that is merged there is nothing left to approve.
+The two documents are precise about where each gate sits, and §7 names which one
+it means: UAT's row reads "**Gated promotion**", while production's reads
+"**Gated** manual/approved sync". ci-cd §4.1 says the same from the other side,
+gating UAT on a "manual approval (PO/QA)" of the **promotion**; §1.3 and §4.1
+reserve a gated **sync** for production alone. So UAT's gate is the approval on
+the PR that moves its tag, and once that is merged there is nothing left to
+approve.
 Production is the only environment whose children have no `syncPolicy.automated`.
 
 ## Sync policy
@@ -181,51 +184,41 @@ yet (below).
 
 ## Known gaps
 
-**UAT is 3 of 5.** `deploy/charts/{checkin,worker}` have no `values-uat.yaml`;
-`web`, `relay` and `api` do. Those two Applications fail with `values file does
-not exist` until someone writes the file, and the reference stays in place
-because that error names the fix — `ignoreMissingValueFiles` would not make
-them sync, only change which error they report, and
-[apps/uat.yaml](apps/uat.yaml) records why.
+**The data-subnet CIDRs are placeholders in all four environments.** The
+*scheme* is settled and consistent — that was an open disagreement until
+recently and is no longer — but not one of the addresses is real. Every
+`networkPolicy.egress.{postgres,redis,rabbitmq}.cidrs` entry stands in for the
+Terraform network module's data-subnet outputs (§1.1), and that module does not
+exist because no provider has been chosen.
 
-What each remaining file needs, by the pattern the other three charts already
-set:
+All four charts that declare egress to the stores now name the same ranges for
+the same environment:
 
-- `environment: uat` and an `image.tag` placeholder (ci-cd §3, §4.1).
-- `externalSecret.dataFrom` at `/eventa/uat/<service>` — §5's per-environment
-  path is the entire least-privilege boundary, and it is the reason these files
-  cannot be skipped. `checkin` reads the api's own path, `/eventa/uat/api`,
-  because it is the api process (see that chart's values).
-- `config.env` hostnames for UAT. `web`'s overlay already establishes
-  `uat.eventa.dev` and `api`'s establishes `api.uat.eventa.dev`.
-- An `ingress.hosts` entry for `checkin`.
-- `networkPolicy.egress.{postgres,redis,rabbitmq}.cidrs`. **Settle the CIDR
-  scheme first.** Every one of these is a placeholder for the Terraform network
-  module's data-subnet outputs (§1.1), and that module does not exist, so
-  adding another opinion before it does makes the disagreement harder to
-  resolve rather than easier.
+| Environment | api / checkin / worker / relay |
+| --- | --- |
+| dev | `10.10.1.0/24` |
+| staging | `10.20.1.0/24` |
+| UAT | `10.30.1.0/24` |
+| prod | `10.40.1.0/24`, `10.40.2.0/24`, `10.40.3.0/24` |
 
-  The second octet now keys the environment consistently — `10.10` dev,
-  `10.20` staging, `10.30` UAT, `10.40` prod — and that part is settled. What is
-  **not** settled is which subnets inside an environment hold the data tier.
-  Four charts name four different answers for the same managed Postgres:
+Two rules produce that shape, and both are spec rather than taste. The second
+octet keys the environment — `10.10` dev, `10.20` staging, `10.30` UAT, `10.40`
+prod. The third octet keys the availability zone, and only production lists
+more than one: §8 runs dev, staging and UAT on single-node data services, so
+there is no standby in another zone to allow, while §4 gives production a
+multi-AZ Postgres standby and a three-node RabbitMQ cluster, so its endpoint
+moves between zones.
 
-  | Environment | api / checkin | worker | relay |
-  | --- | --- | --- | --- |
-  | dev | `10.10.1.0/24` | `10.10.1.0/24` | `10.10.3.0/24` |
-  | staging | `10.20.1.0/24` | `10.20.1.0/24` | `10.20.3.0/24` |
-  | UAT | `10.30.1.0/24` | *(no overlay)* | `10.30.3.0/24` |
-  | prod | `10.40.1-3.0/24` | `10.40.8.0/21` | `10.40.3-5.0/24` |
+`relay` names no Redis range in any environment, which is deviation 3 in the
+[repository README](../README.md) and not a gap: `eventa-relay` has no
+`REDIS_URL` and §3.3's own rule is that nothing undeclared is permitted.
 
-  These are not meant to differ. Both `api/values-prod.yaml` and
-  `relay/values-prod.yaml` say in so many words that they list *all three
-  per-AZ data subnets* because §4 gives Postgres a multi-AZ standby and
-  RabbitMQ a three-node cluster — and then name different three. `worker`
-  states one `/21` supernet instead, which covers `10.40.8.0-10.40.15.255` and
-  so overlaps **neither** of the other two. At most one of the three can be
-  right, and whichever it is, the other two silently lose their database on the
-  first failover. Pick one scheme, apply it to all four charts in one change,
-  and only then write the UAT overlays.
+Change the scheme in all four charts in one commit or not at all. A range that
+is too narrow fails loudly — readiness cannot reach Postgres, so no replica
+becomes Ready and the rollout halts — while one that is too broad fails
+silently, by granting the workload reach into the rest of the VPC. Review each
+against the module's output when it exists, not against a neighbouring
+environment.
 
 **PR previews are not implemented.** §3.1's `preview-<pr>` namespace and
 ci-cd §1.1's `ApplicationSet` with a PR generator are absent on purpose; the
@@ -262,10 +255,15 @@ Run `helm dependency build deploy/charts/<svc>` first if `charts/` is empty —
 the `file://../_library` dependency is gitignored and `Chart.lock` pins it.
 Argo CD does this itself on every sync.
 
-Expect **18 OK and 2 FAIL**: `uat/checkin` and `uat/worker`, each naming the
-missing `values-uat.yaml`. Any other failure is a regression. Update these two
-numbers in the same change that adds an overlay, or the next person cannot tell
-a regression from a stale count.
+Expect **20 OK and 0 FAIL**. Every chart has an overlay for every one of §7's
+four parity environments, so there is no expected failure left to subtract: any
+`FAIL` is a regression. Verified with helm 4.3.0 — the object counts are web 8,
+api 11 in dev and 12 elsewhere, checkin 8 in dev and 9 elsewhere, worker 7,
+relay 6. Both dev shortfalls are deliberate and neither is a missing overlay:
+the api's dev overlay sets `canary.analysis.enabled: false`, so no
+`AnalysisTemplate` renders, and checkin's dev overlay sets `hpa.enabled: false`. Update
+these numbers in the same change that adds or removes an overlay, or the next
+person cannot tell a regression from a stale count.
 
 **2. Every `path` in this tree exists, and every Application names a declared
 project.** Both are easy to get wrong by renaming a directory:

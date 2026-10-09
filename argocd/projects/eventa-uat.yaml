@@ -3,8 +3,11 @@
 # curated, masked data, reached by a gated promotion that product and QA
 # approve (§7, devops-ci-cd.md §4.1).
 #
-# Three of the five charts cannot be deployed here yet, because they have no
-# `values-uat.yaml`. ../README.md names them and says what to write.
+# All five charts deploy here. Each ships a `values-uat.yaml`, so every
+# Application in ../environments/uat renders — ../README.md, "Verifying a
+# change", has the loop that checks it. This comment previously said three of
+# the five could not be deployed for want of that file; the real count was two,
+# `checkin` and `worker`, and it is now none.
 apiVersion: argoproj.io/v1alpha1
 kind: AppProject
 metadata:

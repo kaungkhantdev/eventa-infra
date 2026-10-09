@@ -7,17 +7,22 @@
 # (src/config/env.validation.ts:148, :182) and keeps the mail path identical to
 # prod's. What differs is the data, the credentials and the ceiling.
 #
-# There is still no values-uat.yaml, so this chart has no UAT deployment. This
-# header used to say that UAT "syncs this file with `/eventa/uat/worker`
-# overridden by its Argo CD Application". It does not:
-# `../../../argocd/environments/uat/worker.yaml` names `values-uat.yaml` in its
-# `valueFiles` and carries no `helm.parameters` at all, so that Application
-# reports a missing values file rather than deploying this one — as its own
-# header says. §7 lists UAT as one of four parity environments, so the gap is
-# real; whether it closes with a fourth overlay here or with a change to that
-# Application is recorded there and is not settled in this file.
-# ../api/values-uat.yaml now exists because `eventa-uat` cannot have a
-# namespace-wide default-deny without it (§3.3, ../_library/README.md).
+# UAT does NOT use this file. `./values-uat.yaml` now exists and
+# `../../../argocd/environments/uat/worker.yaml` names it in its `valueFiles`,
+# so that Application renders its own overlay. This header previously said UAT
+# "syncs this file with `/eventa/uat/worker` overridden by its Argo CD
+# Application", which was never true of any arrangement in this repo: that
+# Application carries no `helm.parameters`, and neither does any other
+# Application under `argocd/` — §1.2 makes the values file the unit of
+# deployment, so there is no mechanism by which an Application could substitute
+# a secret path for a chart. Before the overlay existed it simply reported a
+# missing values file.
+#
+# UAT derives FROM this file rather than sharing it, because §7 makes staging
+# the nearest parity environment. What values-uat.yaml changes is what §7 allows
+# — "sizing, replica counts, retention, and data sensitivity" — plus the
+# coordinates; most visibly it declines staging's `LOG_LEVEL: debug`, since
+# UAT's data is curated realistic and masked rather than anonymised.
 
 environment: staging
 

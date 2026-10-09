@@ -16,8 +16,10 @@ dependencies:
   # Every shared object this chart renders comes from the library chart, so a
   # change to a probe or a disruption budget happens once for all five workloads
   # (devops-infrastructure.md §1.2). This chart contributes values plus
-  # templates/_guard.tpl, which adds two refusals of its own on top of the
-  # library's: `singleton.enabled: false`, and `migrationJob.enabled: true`.
+  # templates/_guard.tpl, which adds three refusals of its own on top of the
+  # library's: `singleton.enabled: false`, `migrationJob.enabled: true`, and a
+  # `replicaCount` of any value — Helm's conventional key, which this library
+  # does not read and used to ignore in silence.
   - name: eventa-library
     version: 0.1.0
     repository: "file://../_library"
@@ -40,47 +42,41 @@ annotations:
     eventa-docs/07-deployment/devops-ci-cd.md §4.2, §4.3, §5.1, §5.3
     eventa-docs/08-maintenance/devops-observability-sre.md §1, §2
   # Every place this chart does not do what a document says, and the source that
-  # settles each one. See README.md and templates/_guard.tpl. The replica count
-  # is the only one where the document is wrong; the rest are places where a
-  # document asks for something eventa-relay cannot yet support, or groups the
-  # relay with services whose needs it does not share.
+  # settles each one. See README.md and templates/_guard.tpl. Each one is a
+  # document asking for something eventa-relay cannot yet support, or grouping
+  # the relay with services whose needs it does not share.
+  #
+  # The replica count is NOT on this list, and used to be. devops-infrastructure.md
+  # §3.2 now tabulates relay at "exactly 1 — a fixed count, not a minimum" with
+  # the scaling signal "None — no HPA", §6 says it "does not scale at all", and
+  # devops-ci-cd.md §0 says "exactly 1 replica, no HPA". §3.2 even documents this
+  # chart's render guard. Chart and specification agree; the guard remains because
+  # the reason for it is the code, and the code has not changed.
   eventa.io/spec-deviations: |
-    1. REPLICA COUNT — the document is wrong.
-       devops-infrastructure.md §3.2 tabulates relay at a minimum of 2 replicas.
-       eventa-relay/src/relay/outbox-reader.repository.ts:25 selects pending rows
-       with no FOR UPDATE SKIP LOCKED, so a second replica publishes every event
-       twice. This chart pins one replica and fails to render if anyone raises it.
-    2. NO HPA — the same defect, in three more entries.
-       devops-infrastructure.md §3.2 gives relay the signal "CPU + outbox lag",
-       §6 lists "queue depth (worker/relay)" and "relay scales with outbox lag",
-       and devops-ci-cd.md §0 tabulates relay as "1 Deployment + HPA
-       (singleton-safe)". This chart ships no HPA and fails the render on
-       hpa.enabled=true: until the reader claims rows, an autoscaler's only job
-       would be to create the replica that must not exist. Outbox lag is still
-       the signal to watch — it wakes a human instead (observability §2).
-    3. NO /metrics — the image cannot serve it.
+    1. NO /metrics — the image cannot serve it.
        devops-observability-sre.md §1 scrapes all 5 workloads via /metrics.
        eventa-relay/src/main.ts:24 creates an application context, not a server:
        there is no listen, no controller and no port, so there is nothing to
        scrape. §2 anticipates this and sources outbox lag from a "relay gauge /
        DB query exporter" instead.
-    4. NO PROBES — the image does not ship the check the spec asks for.
+    2. NO PROBES — the image does not ship the check the spec asks for.
        devops-infrastructure.md §3.3 sends workers/relay to exec/TCP checks plus
        broker-connection health, and devops-ci-cd.md §4.3 wants every workload to
        define startup, readiness and liveness. eventa-relay has no health module
        and no CLI entrypoint; with maxSurge 0, an exec probe pointed at an absent
        command would leave ZERO publishers on every deploy. See README.md.
-    5. NO REDIS EGRESS — the grouping does not fit.
+    3. NO REDIS EGRESS — the grouping does not fit.
        devops-infrastructure.md §3.3 groups "api/checkin/worker/relay →
        Postgres/Redis/RabbitMQ". eventa-relay's env schema has no REDIS_URL and
        the service holds no cache, session or idempotency state
        (eventa-relay/src/config/env.validation.ts:11-27), and §3.3's own rule is
        that nothing undeclared is permitted.
-  # What needs correcting upstream in eventa-docs, which is read-only from this
-  # repo. eventa-infra/README.md, warning 4, carries the full list.
+  # What still needs correcting upstream in eventa-docs, which is read-only from
+  # this repo. eventa-infra/README.md, warning 4, carries the full list.
+  #
+  # Three earlier entries have since been applied upstream and are gone from this
+  # list: devops-infrastructure.md §3.2's relay row (replica count and scaling
+  # signal), §6's Pods and Consumers rows, and devops-ci-cd.md §0's relay row.
   eventa.io/upstream-corrections: |
-    devops-infrastructure.md §3.2 (relay row: min replicas, scaling signal)
-    devops-infrastructure.md §6 (Pods row, Consumers row)
-    devops-ci-cd.md §0 (relay row: "+ HPA (singleton-safe)")
     devops-observability-sre.md §1 (Metrics row: "all 5 workloads via /metrics")
     devops-infrastructure.md §3.3 (NetworkPolicy allows: relay needs no Redis)

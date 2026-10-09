@@ -34,11 +34,12 @@ spec:
     so both concurrent copies are handled and one registration sends the buyer
     two confirmation emails.
 
-    devops-infrastructure.md §3.2 tabulates relay at 2 replicas. That entry is a
-    defect in the document, not a target: eventa-infra/README.md and the source
-    comment above both say one replica, and `_validate.tpl` fails the render if
-    anyone sets `replicas` higher. Check the reader for the lock before lifting
-    either.
+    devops-infrastructure.md §3.2 tabulates relay at "exactly 1 — a fixed count,
+    not a minimum", and its closing paragraph names the effect of this literal:
+    the chart "fails to render if the replica count is raised". Source comment,
+    chart and document all say one replica, and `_validate.tpl` fails the render
+    if anyone sets `replicas` higher. Check the reader for the lock before
+    lifting any of them.
   */}}
   replicas: 1
   {{- else if not $v.hpa.enabled }}

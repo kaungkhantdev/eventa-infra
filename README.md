@@ -24,18 +24,44 @@ Helm charts and Argo CD for running [Eventa](../eventa-docs).
 > replaced the allow matches nothing and inbound traffic to the workload stops.
 > The marker appears verbatim in the rendered object and in an Argo CD diff.
 >
-> **Known gaps.** Two are open, and one was a live defect that is now fixed —
-> recorded because it is the failure mode this repo is most likely to recreate:
+> **Known gaps.** Two are open; two are closed and kept on the list, because
+> each is a failure mode this repo is likely to recreate:
 >
-> 1. **`values-uat.yaml` is missing for `checkin` and `worker`**, so two of
->    UAT's five Argo CD Applications cannot sync at all. The
->    `argocd/environments/uat/*.yaml` Applications already reference the file,
->    and nothing overrides it — no Application in this repo carries
->    `helm.parameters`. [argocd/README.md](argocd/README.md) lists what each
->    file has to contain, and why the CIDR scheme has to be settled first:
->    `api`, `checkin`, `worker` and `relay` currently name three different
->    ranges for the same production Postgres, so the UAT files must not add a
->    fourth.
+> 1. **The production domain is undecided, and so is the production mail
+>    sender.** No document in `eventa-docs` names a production hostname —
+>    `eventa.co.th` appears only as fixture data
+>    (`06-testing/test-cases.md:503`), and `eventa.dev` is named only for PR
+>    previews (`devops-ci-cd.md` §1.1, `pr-<n>.preview.eventa.dev`). So
+>    production points at the reserved zone `eventa.invalid`, and
+>    `worker/values-prod.yaml` carries
+>    `EMAIL_FROM: Eventa <no-reply@REPLACE_WITH_PRODUCTION_MAIL_DOMAIN>`. The
+>    two placeholders differ on purpose: the worker's guard refuses a
+>    `.invalid` sender under `NODE_ENV=production`, because a valid address on a
+>    domain that resolves nowhere is accepted by the provider and junked at the
+>    recipient, while a token that is not a parseable domain is rejected loudly
+>    at submission.
+>
+>    **Renaming it is ten lines across four `values-prod.yaml` files — not one
+>    line per chart.** The ten are not spread evenly, and the uneven part is
+>    what gets missed: `api` has **4** (`PUBLIC_WEB_URL`, `PUBLIC_API_URL`,
+>    `CORS_ORIGINS` and the `api.` ingress host), `checkin` has **4** (the same
+>    three config keys plus the `checkin.` ingress host), `web` has **1** (the
+>    `www.` ingress host), `worker` has **1** (`PUBLIC_WEB_URL`), and `relay`
+>    has **0** — it has no `config:` block in `values-prod.yaml` at all, because
+>    it serves no HTTP and writes no links. Edit one line per chart and
+>    `PUBLIC_API_URL`, `CORS_ORIGINS` and two ingress hosts stay on
+>    `eventa.invalid`, which fails in the two ways a half-rename always fails:
+>    the browser is handed an API origin that resolves nowhere, and the api
+>    rejects the real web origin as cross-site. Enumerate them before editing —
+>    the second `grep` drops the comment lines that merely discuss the
+>    placeholder:
+>
+>    ```sh
+>    grep -rn "eventa.invalid" deploy/charts/*/values-prod.yaml | grep -v ':[0-9]*: *#'
+>    ```
+>
+>    Mail from the new domain is only delivered once the provider holds its SPF
+>    and DKIM records.
 > 2. **PR preview environments are not implemented.** §3.1's `preview-<pr>`
 >    namespace and ci-cd §1.1's `ApplicationSet` are absent on purpose; the
 >    three blockers are written out in
@@ -51,6 +77,20 @@ Helm charts and Argo CD for running [Eventa](../eventa-docs).
 >    **An in-cluster caller added later needs the same pair of allows**, and
 >    §3.3's "no pod-to-pod that isn't declared" is the rule that makes a
 >    forgotten declaration silent rather than refused.
+> 4. **Fixed: UAT is no longer short two overlays.** `checkin` and `worker` were
+>    built with dev, staging and prod only, so their
+>    `argocd/environments/uat/*.yaml` Applications named a `values-uat.yaml` that
+>    did not exist and reported `values file does not exist` on every sync. Both
+>    overlays now exist and **all 20 chart/environment pairs render.** The cost
+>    while it was open is the part worth remembering: §7 lists four parity
+>    environments, so a chart built for three leaves a namespace silently
+>    incomplete rather than visibly broken. With no `worker` release in
+>    `eventa-uat` a registration produced a green page and no email — the api
+>    wrote its outbox row and the relay published it, and the `eventa.worker`
+>    binding that image declares was simply absent, so the topic exchange
+>    dropped the message. **Adding an environment means adding an overlay to all
+>    five charts**, and `argocd/README.md`'s render loop is what catches a
+>    chart that was missed.
 >
 > Local development still runs the whole platform from `docker compose` in
 > `eventa-api` — see [below](#local-development).
@@ -68,11 +108,13 @@ of truth:
 | [software-architecture.md §8](../eventa-docs/04-architecture/software-architecture.md) | The deployment view the above implement |
 | [devops-observability-sre.md](../eventa-docs/08-maintenance/devops-observability-sre.md) | The signals every service must emit |
 
-There are **six** places where these charts do not do what one of those
-documents says — four because the document is wrong, two because it asks for
-something the service cannot yet do. All six are listed under **warning 4**,
-with the five upstream corrections they need. Nothing else in these charts
-departs from the documents.
+There are **four** places where these charts do not do what one of those
+documents says — two because the document is wrong, two because it asks for
+something the service cannot yet do. All four are listed under **warning 4**,
+with the two upstream corrections they still need. Nothing else in these charts
+departs from the documents. The relay's replica count used to head that list and
+no longer belongs on it: §3.2 has been corrected and now says what the chart
+does.
 
 ## Layout
 
@@ -139,11 +181,15 @@ helm template relay deploy/charts/relay -n eventa-prod \
 ```
 
 The same guard trips on `hpa.enabled=true`, on
-`updateStrategy.rollingUpdate.maxSurge=1` (a surge *is* a second replica) and on
-`singleton.enabled=false`. All four are verified failing. There is also no Argo
-CD route to it: no Application in `argocd/` carries a `helm.parameters` block, so
-the replica count cannot be overridden from outside the values files the chart
-validates.
+`updateStrategy.rollingUpdate.maxSurge=1` (a surge *is* a second replica), on
+`singleton.enabled=false`, on `migrationJob.enabled=true` (the Job runs the
+relay image's own entrypoint, so it is a second publisher that never touches the
+replica count) and on `replicaCount`, which is Helm's conventional key name and
+not this library's — it used to be accepted and silently ignored, which left the
+manifest right and the operator's belief about it wrong. All six are verified
+failing. There is also no Argo CD route to any of them: no Application in
+`argocd/` carries a `helm.parameters` block, so the replica count cannot be
+overridden from outside the values files the chart validates.
 
 **The guard stops at the cluster boundary, and production has no net past it.**
 Every one of those four refusals happens at *render* time, and `kubectl scale`
@@ -186,31 +232,46 @@ Application and sync waves only order resources *within* one —
 [argocd/README.md](argocd/README.md) explains why annotating the Applications
 would make it worse.
 
-**4. `devops-infrastructure.md` §3.2 is wrong about the relay, and the charts
-refuse to follow it.** This one is new and is not recorded in any document in
-`eventa-docs`.
+**4. The charts and the documents still disagree in four places — and the
+relay's replica count is no longer one of them.** That disagreement used to be
+this warning's whole subject, so it is recorded here rather than quietly deleted:
+anyone who remembers this file arguing at length that §3.2 was wrong about the
+relay should know the argument was won upstream and the text has been retired.
 
-§3.2 tabulates `relay` at a **minimum of 2 replicas**, and §6 adds that "`relay`
-scales with outbox lag". Both describe the right design for a reader that claims
-rows. That reader does not exist:
+What §3.2 and §6 once said, and what they say now:
+
+| Entry | Then | Now |
+| --- | --- | --- |
+| `devops-infrastructure.md` §3.2, relay row | minimum **2** replicas, scaling signal "CPU + outbox lag" | "**exactly 1** — a fixed count, not a minimum", scaling signal "**None** — no HPA" |
+| `devops-infrastructure.md` §6, Pods row | HPA per service, relay included | "**HPA per service**, except the singleton `relay` which has none (§3.2)" |
+| `devops-infrastructure.md` §6, Consumers row | "`relay` scales with outbox lag" | the `relay` "**does not scale at all**"; lag "is an alerting signal, not a scaling signal" |
+| `devops-ci-cd.md` §0, relay row | "1 Deployment + HPA (singleton-safe)" | "1 Deployment, **exactly 1 replica, no HPA** — a singleton" |
+
+§3.2 goes further than agreeing: it states that "the `relay` is a singleton and
+must not be scaled", spells out the lift condition in the same terms this repo
+uses, and documents this repo's own render guard — the chart "fails to render if
+the replica count is raised or its HPA enabled, rather than trusting this table".
+
+**The guard stays, and for exactly the reason it always had, because that reason
+was never the document.** It is the reader:
 
 | Evidence | What it says |
 | --- | --- |
 | [`eventa-relay/src/relay/outbox-reader.repository.ts:25`](../eventa-relay/src/relay/outbox-reader.repository.ts) | `fetchBatch` selects pending rows on `isNull(outboxEvents.publishedAt)`. There is no `FOR UPDATE SKIP LOCKED`, so two readers polling at the same time return the **same rows**. |
 | [`eventa-relay/src/main.ts:20`](../eventa-relay/src/main.ts) | "Scaling this safely needs `FOR UPDATE SKIP LOCKED` in the reader first." |
 
-Following §3.2 would double-publish every outbox message: both replicas select
-the row, both publish it, both mark it published. Consumers dedupe on message id
-but only *after* the first copy has been handled, so two copies delivered
-concurrently are both handled — one registration, two confirmation emails.
+A second replica double-publishes every outbox message: both select the row, both
+publish it, both mark it published. Consumers dedupe on message id but only
+*after* the first copy has been handled, so two copies delivered concurrently are
+both handled — one registration, two confirmation emails. So the charts pin one
+replica, ship no HPA for the relay, and fail to render if anyone raises the count
+(warning 1 shows the error). Chart, document and source now say the same thing,
+and the guard is what stops a values file or a `--set` from leaving all three
+behind.
 
-So the charts pin one replica, ship no HPA for the relay, and fail to render if
-anyone raises the count (warning 1 shows the error). **The chart is right and the
-document is wrong**, which is the opposite of the rule at the top of this file.
-
-It is not, however, the only place the charts and the documents disagree. The
-full list is below, because "the charts implement the spec except here" was the
-claim this file used to make and it was not true.
+Four other disagreements remain, and they are listed in full below, because "the
+charts implement the spec except here" was the claim this file used to make and
+it was not true.
 
 **Before the guard can be lifted, in this order:**
 
@@ -220,61 +281,69 @@ claim this file used to make and it was not true.
 2. Delete `deploy/charts/relay/templates/_guard.tpl` and the `singleton` block
    from `deploy/charts/relay/values.yaml` in the same change, so the chart and the
    code stop disagreeing at the same commit.
-3. Only then raise `replicas` and add the outbox-lag HPA §6 asks for, keeping the
-   PodDisruptionBudget at or above one publisher.
+3. Only then raise `replicas` and add the outbox-lag HPA — which §3.2 sanctions
+   for exactly that moment, not before: "the outbox-lag metric that §6 uses for
+   *alerting* can additionally serve as a scaling signal" once the reader claims
+   rows. Keep the PodDisruptionBudget at or above one publisher.
 
 Step 3 without step 1 is the double-publish.
 
 ### Every place the charts do not do what a document says
 
-Six, verified by rendering each chart rather than by reading its comments. Four
-of them (1, 2, 5, 6) are cases of the document being **wrong** — a figure that
-contradicts the code, or a grouping that puts the relay with services whose
-needs it does not share. Two (3, 4) are cases of a document asking for something
-`eventa-relay` **cannot yet do**; those close when the service gains the
-feature, not when the document is edited. None of them is a free choice, and
-each is argued in the chart that makes it.
+Four, verified by rendering each chart rather than by reading its comments. Two
+of them (3 and 4) are cases of the document being **wrong** — a grouping that
+puts the relay with services whose needs it does not share, and a parenthetical
+that is out of date for the worker. Two (1 and 2) are cases of a document asking
+for something `eventa-relay` **cannot yet do**; those close when the service
+gains the feature, not when the document is edited. None of them is a free
+choice, and each is argued in the chart that makes it. Each row's "what the
+document says" column was re-read against `eventa-docs` as it stands, not
+carried over from the last time this table was written.
 
 | # | Deviation | What the document says | Why the chart differs |
 | --- | --- | --- | --- |
-| 1 | **relay runs exactly 1 replica** | `devops-infrastructure.md` §3.2: minimum 2 | The reader takes no row lock. The two source lines above. **The document is wrong.** |
-| 2 | **relay ships no HPA at all** | §3.2 gives it the signal "CPU + outbox lag"; §6 lists "queue depth (worker/relay)" and "`relay` scales with outbox lag"; **`devops-ci-cd.md` §0** tabulates it as "1 Deployment + HPA (singleton-safe)" | Same defect as 1, in four more entries (§3.2's signal column, §6's Pods row, §6's Consumers row, ci-cd §0's relay row). Until the reader claims rows an autoscaler's only job is to create the replica that must not exist. Outbox lag still *is* the signal — it wakes a human (observability §2). **The documents are wrong.** |
-| 3 | **relay serves no `/metrics`** | `devops-observability-sre.md` §1: "all 5 workloads via `/metrics`" | `eventa-relay/src/main.ts:24` creates an application *context* — no `listen`, no controller, no port, so there is nothing to scrape. §2 anticipates this and sources outbox lag from a "relay gauge / **DB query exporter**", which is the better signal anyway because it still reports when the relay is gone. |
-| 4 | **relay ships no probes** | §3.3: "Workers/relay use exec/TCP checks … plus broker-connection health"; `devops-ci-cd.md` §4.3: "every workload defines `startup`, `readiness`, `liveness`" | That is the right probe and `eventa-relay` does not have it: no health module, no CLI entrypoint, no second binary. TCP has nothing to connect to. With `maxSurge: 0`, an `exec` probe pointed at an absent command would leave **zero** publishers on every deploy. |
-| 5 | **relay has no Redis egress** | §3.3 groups "api/checkin/worker/relay → Postgres/Redis/RabbitMQ" | `eventa-relay`'s env schema has no `REDIS_URL` and the service holds no cache, session or idempotency state (`src/config/env.validation.ts:11-27`). §3.3's own rule is that nothing undeclared is permitted. |
-| 6 | **worker uses HTTP probes, not exec/TCP** | the same §3.3 sentence's "(no HTTP server)" | Out of date for the worker: `eventa-worker/src/main.ts:18` calls `app.listen(port)` and `src/health/health.controller.ts:27,36` serves `/health/live` and `/health/ready`, with liveness reporting "attached to the queue" — which is the broker-connection health the same sentence asks for. **The parenthetical is wrong.** |
+| 1 | **relay serves no `/metrics`** | `devops-observability-sre.md` §1: "all 5 workloads via `/metrics`" | `eventa-relay/src/main.ts:24` creates an application *context* — no `listen`, no controller, no port, so there is nothing to scrape. §2 anticipates this and sources outbox lag from a "relay gauge / **DB query exporter**", which is the better signal anyway because it still reports when the relay is gone. |
+| 2 | **relay ships no probes** | §3.3: "Workers/relay use exec/TCP checks … plus broker-connection health"; `devops-ci-cd.md` §4.3: "every workload defines `startup`, `readiness`, `liveness`" | That is the right probe and `eventa-relay` does not have it: no health module, no CLI entrypoint, no second binary. TCP has nothing to connect to. With `maxSurge: 0`, an `exec` probe pointed at an absent command would leave **zero** publishers on every deploy. |
+| 3 | **relay has no Redis egress** | §3.3 groups "api/checkin/worker/relay → Postgres/Redis/RabbitMQ" | `eventa-relay`'s env schema has no `REDIS_URL` and the service holds no cache, session or idempotency state (`src/config/env.validation.ts:11-27`). §3.3's own rule is that nothing undeclared is permitted. |
+| 4 | **worker uses HTTP probes, not exec/TCP** | the same §3.3 sentence's "(no HTTP server)" | Out of date for the worker: `eventa-worker/src/main.ts:18` calls `app.listen(port)` and `src/health/health.controller.ts:27,36` serves `/health/live` and `/health/ready`, with liveness reporting "attached to the queue" — which is the broker-connection health the same sentence asks for. **The parenthetical is wrong.** |
 
-Two further places where the *documents disagree with each other* and the charts
-follow the more specific one, which is a reading rather than a deviation:
+One further place where the *documents disagree with each other* and the charts
+follow the more specific one, which is a reading rather than a deviation — and
+one where they agree, in wording that is easy to misread as a disagreement:
 
 - **`web` has no startup probe.** §3.3 puts a startup probe "on api/worker";
   ci-cd §4.3 says every workload defines one. The charts follow §3.3, and web is
   a Node SSR server with no cold NestJS boot to cover.
-- **UAT auto-syncs although §7 calls it "gated".** ci-cd §4.1 gates UAT on an
-  approval of the *promotion*; §1.3 and §4.1 reserve a gated *sync* for
-  production. [argocd/README.md](argocd/README.md) works this through.
+- **UAT auto-syncs, and §7's "Gated promotion" is why that is right.** The gate
+  §7 names is on the *promotion*, not on the Argo CD *sync* that follows it:
+  ci-cd §4.1 gates UAT on a PO/QA approval of the tag bump, and §1.3 and §4.1
+  reserve a gated sync for production alone.
+  [argocd/README.md](argocd/README.md) works this through.
 
-### `eventa-docs` needs five corrections and this repo cannot make them
+### `eventa-docs` needs two more corrections, and this repo cannot make them
 
-`eventa-docs` is read-only from here, so every entry below is still uncorrected
-upstream. Someone with write access should amend all five — correcting only
-§3.2 and §6 would leave `devops-ci-cd.md` §0 still specifying an HPA for the
-relay, which is the entry a reader is most likely to hit first, since §0 is the
-inventory table at the top of that document.
+This section used to list five, and asked for all five at once. **Three have
+since been applied upstream** — `devops-infrastructure.md` §3.2's relay row,
+§6's Pods and Consumers rows, and `devops-ci-cd.md` §0's relay row all now match
+the charts, and §3.2 additionally documents this repo's render guard (warning 4
+quotes the before and after). They are struck from the table rather than left on
+it with a note: a list that keeps crying wolf on entries somebody already fixed
+is a list the next reader stops checking, including on the two below, which are
+real.
 
-| Document and entry | Should say |
-| --- | --- |
-| `devops-infrastructure.md` §3.2, relay row | **exactly 1** replica, scaling signal **none**, until `eventa-relay`'s reader takes a row lock. Reference `outbox-reader.repository.ts:25` and `main.ts:20`. |
-| `devops-infrastructure.md` §6, the Pods and Consumers rows | Drop `relay` from "queue depth (worker/relay)" and strike "`relay` scales with outbox lag". Outbox lag stays an **alerting** signal, not a scaling one. |
-| **`devops-ci-cd.md` §0**, relay row | "1 Deployment, **no HPA**" — not "1 Deployment + HPA (singleton-safe)". A singleton-safe HPA is not a thing that exists here. |
-| `devops-observability-sre.md` §1, Metrics row | "all 5 workloads via `/metrics`" → four; the relay is measured by the DB query exporter §2 already names. |
-| `devops-infrastructure.md` §3.3, NetworkPolicy allows and probes bullet | Drop `relay` from the Redis grouping, and drop "(no HTTP server)" from the workers half of the probes sentence. |
+`eventa-docs` is read-only from here, so the remaining two need somebody with
+write access. Both were re-read against the current text before being kept:
 
-Until those land, the next reader of the specification will believe the tables
-and reopen all of this. The two charts that deviate carry their own entries in a
+| Document and entry | Should say | Verified still wrong |
+| --- | --- | --- |
+| `devops-observability-sre.md` §1, Metrics row | "all 5 workloads via `/metrics`" → four; the relay is measured by the DB query exporter §2 already names. | Still reads "all 5 workloads via `/metrics`, plus RabbitMQ, Postgres, Redis exporters" (§1, line 39). |
+| `devops-infrastructure.md` §3.3, NetworkPolicy allows and probes bullet | Drop `relay` from the Redis grouping, and drop "(no HTTP server)" from the workers half of the probes sentence. | Still reads "api/checkin/worker/relay → Postgres/Redis/RabbitMQ" (line 264) and "Workers/relay use exec/TCP checks (no HTTP server)" (line 251). |
+
+Until those two land, a reader of those sections will believe them and reopen a
+settled question. The two charts that deviate carry their own entries in an
 `eventa.io/spec-deviations` annotation — `deploy/charts/relay/Chart.yaml` has
-items 1–5 plus this correction list, and `deploy/charts/worker/Chart.yaml` has
-item 6 — so a deviation travels with the chart that makes it and not only with
+items 1–3 plus this correction list, and `deploy/charts/worker/Chart.yaml` has
+item 4 — so a deviation travels with the chart that makes it and not only with
 this file.
 
 ## Working on the charts locally
@@ -301,9 +370,10 @@ for c in web api checkin worker relay; do
 done
 ```
 
-`checkin` and `worker` have no `values-uat.yaml` yet, so expect two `SKIP`
-lines — that is the gap [argocd/README.md](argocd/README.md) tracks. Everything
-else should print `OK`; 18 of the 20 service/environment pairs render today.
+Expect twenty `OK` lines and no `SKIP`: every chart has an overlay for every one
+of §7's four parity environments, so all 20 service/environment pairs render
+today. The `[ -f "$f" ]` guard is kept because a `SKIP` is the clearest possible
+report of an overlay that has been deleted or renamed. Verified with helm 4.3.0.
 
 **No chart renders without an environment overlay, and that is deliberate.** The
 baseline `values.yaml` of each chart is the production sizing from §3.3 with

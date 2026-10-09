@@ -19,32 +19,44 @@ FinOps),
 [`devops-observability-sre.md`](../../../../eventa-docs/08-maintenance/devops-observability-sre.md)
 (§1 signals, §2 outbox lag). Every object comes from the shared
 [`_library`](../_library) chart; this chart is values plus `templates/_guard.tpl`,
-which adds two refusals of its own.
+which adds three refusals of its own.
 
-This is the chart that departs from the documents most, in **five** places, and
-they are not all the same kind of departure:
+This is the chart that departs from the documents most, in **three** places, and
+all three are the same kind of departure — a document asking for something the
+`eventa-relay` image cannot do, or grouping the relay with services whose needs
+it does not share:
 
-| | Departure | Kind |
+| | Departure | Why |
 | --- | --- | --- |
-| 1 | **1 replica**, not §3.2's minimum of 2 | the document is wrong — [next section](#the-singleton-guard) |
-| 2 | **no HPA**, against §3.2's "CPU + outbox lag", §6's "`relay` scales with outbox lag", and `devops-ci-cd.md` §0's "1 Deployment + HPA (singleton-safe)" | the same defect, in four more entries |
-| 3 | **no `/metrics`**, against observability §1's "all 5 workloads" | the image has no server to scrape |
-| 4 | **no probes**, against §3.3's exec/TCP checks and ci-cd §4.3's "every workload defines startup, readiness, liveness" | the image has no health check to call |
-| 5 | **no Redis egress**, against §3.3's "api/checkin/worker/relay → Postgres/Redis/RabbitMQ" | the service has no `REDIS_URL` |
+| 1 | **no `/metrics`**, against observability §1's "all 5 workloads" | the image has no server to scrape |
+| 2 | **no probes**, against §3.3's exec/TCP checks and ci-cd §4.3's "every workload defines startup, readiness, liveness" | the image has no health check to call |
+| 3 | **no Redis egress**, against §3.3's "api/checkin/worker/relay → Postgres/Redis/RabbitMQ" | the service has no `REDIS_URL` |
 
-Items 1 and 2 are the first section below; 3, 4 and 5 are under
+All three are under
 [What the chart does *not* render](#what-the-chart-does-not-render-and-why).
-`Chart.yaml`'s `eventa.io/spec-deviations` annotation carries all five, and
-`eventa-infra/README.md` warning 4 lists the five corrections `eventa-docs`
-needs — including `devops-ci-cd.md` §0, which is easy to miss because the
-better-known defect is §3.2's.
+`Chart.yaml`'s `eventa.io/spec-deviations` annotation carries the same three, and
+`eventa-infra/README.md` warning 4 lists the two corrections `eventa-docs` still
+needs.
+
+**The replica count is not on that list, and it used to be.**
+`devops-infrastructure.md` §3.2 once tabulated the relay at a minimum of 2
+replicas with the scaling signal "CPU + outbox lag", and `devops-ci-cd.md` §0
+gave it an HPA. Both have been corrected: §3.2 now reads "exactly 1 — a fixed
+count, not a minimum" with the signal "None — no HPA", §6 says the relay "does
+not scale at all" and that outbox lag "is an alerting signal, not a scaling
+signal", and ci-cd §0 reads "exactly 1 replica, no HPA". §3.2 goes further and
+documents this chart's render guard. So the singleton below is not a
+disagreement with the specification — it *is* the specification, and the guard
+is what keeps a values file from leaving both it and the code behind.
 
 ## The singleton guard
 
-**`devops-infrastructure.md` §3.2 tabulates `relay` at a minimum of 2 replicas,
-and §6 says "relay scales with outbox lag". Both describe the right design for
-a reader that claims rows. The reader does not claim rows, so this chart pins
-one replica and refuses to render otherwise.**
+**The reader does not claim the rows it reads, so a second publisher would send
+every event twice. That is why this chart pins one replica and refuses to render
+otherwise.** The reason lives in `eventa-relay`, not in a table — which is worth
+stating plainly, because a reader who goes to the specification will find it
+agreeing (§3.2: "exactly 1 — a fixed count, not a minimum"; §6: the relay "does
+not scale at all") and learn nothing from it about *why*.
 
 Verified in the source rather than taken on trust:
 
@@ -61,7 +73,7 @@ For one registration that is two confirmation emails to the same buyer, and the
 buyer notices before the dashboard does.
 
 `eventa-infra/README.md` asks this chart to "make this hard to get wrong, not
-just documented". Five things do that, and every one of them fails the render
+just documented". Seven things do that, and every one of them fails the render
 rather than emitting a manifest a cluster would accept:
 
 | Attempt | What stops it |
@@ -71,12 +83,16 @@ rather than emitting a manifest a cluster would accept:
 | `hpa.enabled: true` | `_validate.tpl` — an autoscaler on a singleton exists only to create the replica that must not exist |
 | `updateStrategy.rollingUpdate.maxSurge: 1` | `_validate.tpl` — a surge *is* a second replica, arriving on every deploy |
 | `singleton.enabled: false` | **`templates/_guard.tpl`**, this chart's own check. The library cannot tell the workload that must never scale from the four that must, so the value it keys off is not a toggle here |
+| `migrationJob.enabled: true` | **`templates/_guard.tpl`** — the Job carries no command, so it runs the relay image's publisher entrypoint: a second publisher that never touches the replica count |
+| `replicaCount: 2` | **`templates/_guard.tpl`** — Helm's conventional key, not this library's (`replicas`). It used to render cleanly and change nothing, which is safe but silent; refusing it is cheaper than leaving somebody believing they have two publishers |
 
 **To lift the guard,** in this order: land `FOR UPDATE SKIP LOCKED` in
 `eventa-relay/src/relay/outbox-reader.repository.ts`; delete
 `templates/_guard.tpl` and the `singleton` block from `values.yaml` in the same
 change, so chart and code stop disagreeing at the same commit; only then raise
-`replicas` and add the outbox-lag HPA §6 asks for. Step three without step one
+`replicas` and add the outbox-lag HPA that §3.2 sanctions for that moment and
+not before — "the outbox-lag metric that §6 uses for *alerting* can additionally
+serve as a scaling signal" once the reader claims rows. Step three without step one
 is the double publish.
 
 ## What the chart does *not* render, and why
@@ -134,7 +150,7 @@ does not declare.
 | Concern | Value | Source |
 | --- | --- | --- |
 | Replicas | **1, literal** | the guard above |
-| Autoscaling | none | the guard above — and **against** §3.2, §6 and ci-cd §0, which all specify one (deviation 2) |
+| Autoscaling | none | the guard above; §3.2 ("None — no HPA"), §6 ("does not scale at all") and ci-cd §0 ("no HPA") ask for none either |
 | CPU / memory | 100m–500m / 256Mi–512Mi | §3.3 |
 | PodDisruptionBudget | `minAvailable: 1` | §3.3 |
 | Rollout | `RollingUpdate`, `maxSurge: 0`, `maxUnavailable: 1` | ci-cd §4.2, §5.3 |

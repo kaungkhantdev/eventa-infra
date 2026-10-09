@@ -713,6 +713,27 @@
             "fromMetricsScraper": {
               "$ref": "#/$defs/podPeerToggle"
             },
+            "fromNodes": {
+              "description": "Kubelet probe traffic, off by default. A probe is sent from the node's own address, and a NetworkPolicy peer can only be a podSelector, a namespaceSelector or an ipBlock \u2014 a node is neither a pod nor in a namespace \u2014 so the only expressible peer is an ipBlock over the private app subnets that hold the Kubernetes nodes (devops-infrastructure.md \u00a72). `cidrs` falls back to global.eventa.network.nodeCidrs, and enabling this with neither set is a render error: an ingress rule with an empty `from` admits every source rather than none. Empty `ports` means the container ports this chart declares, by number. Whether a default-deny namespace blocks probes at all is a property of the CNI rather than of the API, and no CNI has been chosen \u2014 read _library/README.md before turning this on.",
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "cidrs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "ports": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/port"
+                  }
+                }
+              }
+            },
             "fromPods": {
               "type": "array",
               "items": {
@@ -780,7 +801,7 @@
       }
     },
     "global": {
-      "description": "Set once by an umbrella chart instead of repeating the data-subnet CIDRs in five service charts.",
+      "description": "Set once by an umbrella chart instead of repeating the per-environment subnet CIDRs in five service charts.",
       "type": "object",
       "properties": {
         "eventa": {
@@ -802,6 +823,13 @@
                   }
                 },
                 "rabbitmqCidrs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "nodeCidrs": {
+                  "description": "The private app subnets that hold the Kubernetes nodes (devops-infrastructure.md \u00a72) \u2014 the addresses the kubelet probes from, and the only list here that is not a data subnet. Read only when networkPolicy.ingress.fromNodes is enabled, which it is not by default.",
                   "type": "array",
                   "items": {
                     "type": "string"

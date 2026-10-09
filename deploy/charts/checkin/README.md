@@ -85,7 +85,7 @@ So lint and template the way Argo CD renders it, with an environment's values:
 ```sh
 helm dependency build deploy/charts/checkin
 
-for env in dev staging prod; do
+for env in dev staging uat prod; do
   helm lint     deploy/charts/checkin -f deploy/charts/checkin/values-$env.yaml -n eventa-$env
   helm template checkin deploy/charts/checkin -f deploy/charts/checkin/values-$env.yaml -n eventa-$env
 done
@@ -163,8 +163,18 @@ Three ways forward, in order of preference:
    overlay. The pool still autoscales and still fails independently of the api —
    it just reacts later than §3.2 intends.
 
-Staging keeps all three signals on purpose. It is the environment for perf
-checks (§7), so it is where a missing adapter rule should be discovered.
+Which environment took which option, as the overlays stand today:
+
+| Environment | `hpa.metrics` | Why |
+| --- | --- | --- |
+| `eventa-dev` | — | no HPA at all (`hpa.enabled: false`) |
+| `eventa-staging` | all three | option 3 declined on purpose: §7 puts the perf checks here, so this is where a missing adapter rule should be discovered |
+| `eventa-uat` | `[]` — CPU only | option 3. UAT runs no perf checks and sits idle between acceptance sessions, so parking at a session's high-water mark is exactly the §8 cost described above |
+| `eventa-prod` | all three | the signals §3.2 asks for; **this is the sync the warning above is about** |
+
+Staging and production therefore still carry the unreadable series, which is
+deliberate: the point is that the gap surfaces in staging before it reaches
+production, not that it is hidden everywhere.
 
 ## What this chart deliberately does not do
 
@@ -254,21 +264,25 @@ they are needed.
 
 ## Environments
 
-`eventa-dev`, `eventa-staging` and `eventa-prod` have overlays here. The other
-two from §3.1:
+All four of §7's parity environments have an overlay here — `eventa-dev`,
+`eventa-staging`, `eventa-uat` and `eventa-prod` — so each of the four
+`argocd/environments/*/checkin.yaml` Applications resolves its `valueFiles` and
+renders. The remaining namespace from §3.1:
 
-- **`eventa-uat` has no overlay here, and that is an open gap rather than a
-  design.** `argocd/environments/uat/checkin.yaml` already names
-  `values-uat.yaml` in its `valueFiles`, and no Argo CD Application in this repo
-  carries `helm.parameters`, so nothing substitutes for the file: that
-  Application fails with "values file does not exist" on every sync, and its own
-  header opens with `THIS APPLICATION CANNOT SYNC YET`. `argocd/README.md`
-  tracks it under "Known gaps". §7 makes UAT prod-like with gated promotion, so
-  the file is `values-staging.yaml`'s sizing with UAT's own hostname,
-  `/eventa/uat/api` secret path and data-subnet CIDRs — four keys. Settle the
-  CIDR scheme first; `argocd/README.md` says which overlays currently disagree
-  and why adding another opinion before the Terraform network module exists
-  makes that worse.
+- **`eventa-uat` was an open gap until recently and is not one now.**
+  `argocd/environments/uat/checkin.yaml` named a `values-uat.yaml` that did not
+  exist, so it reported "values file does not exist" on every sync; nothing
+  substituted for the file, because no Argo CD Application in this repo carries
+  `helm.parameters`. That overlay now exists and renders 9 objects, the same as
+  staging and prod. It is `values-staging.yaml`'s shape with UAT's own
+  coordinates — `checkin.uat.eventa.dev`, the `/eventa/uat/api` secret path
+  (this pool is the api process, §3.2, so it reads the api's path and not a
+  `checkin` copy), the `10.30.1.0/24` data subnet, and a ceiling of 6 to match
+  `../api/values-uat.yaml`'s. It declines staging's `LOG_LEVEL: debug`, because
+  §7 anonymises staging's dataset but calls UAT's "curated realistic; masked".
+  The CIDRs there are still Terraform placeholders, as they are in every
+  environment, but the *scheme* no longer disagrees between charts —
+  `argocd/README.md` records it.
 - **`preview-<pr>`** is created per PR and torn down on close (§7,
   devops-ci-cd.md §1.1), with scale-to-zero when idle (§8). That is the one
   environment where an HPA floor of 0 is correct, and the hostname is

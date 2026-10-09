@@ -1,0 +1,213 @@
+# checkin — UAT (namespace `eventa-uat`, devops-infrastructure.md §3.1, §7).
+#
+# §7 names UAT one of the FOUR parity environments — four, not three: business
+# and stakeholder acceptance, on curated realistic data that is masked, reached
+# by gated promotion, which devops-ci-cd.md §4.1 defines as a manual approval
+# from product and QA. Access is "product + selected stakeholders" (§7), so the
+# people driving this environment are the ones who decide whether a release is
+# acceptable.
+#
+# Two things follow from this file's absence rather than from any decision, and
+# both are why it is here:
+#
+#   1. `../../../argocd/environments/uat/checkin.yaml` already names
+#      `values-uat.yaml` in its `valueFiles`, so that Application could not sync
+#      and reported "values file does not exist". The reference was kept
+#      deliberately, because that error names the fix.
+#   2. No separate door pool in `eventa-uat`. The pool IS the deliverable of
+#      §3.2 — the same api image in its own Deployment and HPA — and the door is
+#      exactly the flow a stakeholder accepts in person. Without a release here,
+#      the only thing in the namespace serving the check-in routes is the api
+#      pool itself (same image, so the routes exist there), on the api's own
+#      autoscaler and in the api's failure domain. That is the arrangement §3.2
+#      exists to undo: a scan surge and a checkout competing for one pool.
+#
+# Derived from values-staging.yaml, because staging is the nearest parity
+# environment. What changes is what §7 allows an environment to change —
+# "sizing, replica counts, retention, and data sensitivity" — plus the
+# coordinates: the image reference, the secret path, the CIDRs and the hostname.
+
+environment: uat
+
+image:
+  # PLACEHOLDER, as in every other environment's file. Gated promotion rather
+  # than the bot that moves staging's line: devops-ci-cd.md §4.1 promotes into
+  # UAT behind a manual product/QA approval of the PR that bumps this tag, and
+  # §3 moves the identical signed digest that passed staging — "promotion is by
+  # digest, not rebuild. The identical image scanned and signed in CI is what
+  # runs in dev → staging → UAT → prod."
+  #
+  # It must hold the same SHA as ../api/values-uat.yaml's. §3.2 makes these two
+  # pools one artifact, so two different tags in this namespace would be two
+  # different builds of the api answering at once — the door on one, checkout on
+  # the other.
+  tag: sha-0000000
+
+hpa:
+  # THE FLOOR IS NOT STATED, which is a decision and not an omission: it stays
+  # at the chart baseline's 2, and deliberately does not take staging's 1.
+  #
+  # staging lowers it to 1 so a perf run starts from one pod and measures how
+  # long the first scale-out actually takes; §7 is what puts the perf checks
+  # there. UAT runs none, and a floor of 1 under §3.3's `minAvailable: 50%`
+  # PodDisruptionBudget rounds up to 1 available and so allows zero voluntary
+  # disruptions — a node drain would block on a hand-deleted pod in the middle
+  # of an acceptance session, and a single pod restart would take the door down
+  # while somebody was standing at it.
+  #
+  # The ceiling is the one sizing change. 6 is the same envelope
+  # ../api/values-uat.yaml gives the api pool, and the two should match: they run
+  # the same image with the same 500m CPU request in the same namespace (§3.2),
+  # so it is the sum of their ceilings that the UAT node pool has to be able to
+  # find. It is far below the baseline's 20 because §8 keeps the non-production
+  # environments small and §7 puts the load testing in staging — there is no
+  # real door rush here to scale for, only a demo at a door.
+  #
+  # Above staging's 5, which is not a parity break. staging's ceiling is chosen
+  # to be REACHABLE in a perf run ("a ceiling that is never hit is a ceiling
+  # nobody has tested"); UAT has no such requirement, so its ceiling is sized
+  # for the workload instead.
+  maxReplicas: 6
+
+  # staging's `behavior.scaleUp` override is deliberately NOT carried over, so
+  # this release keeps §3.2's "scales hard for events" from values.yaml. staging
+  # lowers the step because prod's "8 pods at a time" would clear staging's whole
+  # range in a single step and measure nothing — and measuring is the point
+  # there. Nothing in UAT measures the scale-out path, and scale-up only ever
+  # adds capacity, so the aggressive step costs nothing here: a demo door rush
+  # reaches the ceiling in one 30s step, which is what somebody standing at the
+  # door wants.
+
+  # CPU only, exactly as ../api/values-uat.yaml and ../web/values-uat.yaml do,
+  # and for the same mechanism rather than for tidiness. The two entries in
+  # values.yaml name `eventa_http_requests_per_second` and
+  # `eventa_checkin_scan_queue_depth`; nothing in this repo emits either
+  # (eventa-api/src/modules/metrics/metrics.service.ts registers only the two
+  # outbox gauges plus prom-client's defaults) and no document names the
+  # Prometheus adapter that would have to serve them to the metrics API.
+  #
+  # An HPA that cannot read a metric does not merely ignore it: the controller
+  # reports FailedGetPodsMetric with ScalingActive=False and refuses every
+  # scale-IN while the read is failing, because the unreadable metric might be
+  # the one asking for more replicas. In an environment that sits idle between
+  # acceptance sessions that means parking at the session's high-water mark and
+  # billing for it, which is the FinOps problem §8 asks non-prod not to create.
+  #
+  # values-staging.yaml keeps both entries on purpose: staging is prod-like by
+  # design (§7), so it is where a missing adapter rule should be discovered.
+  # Restore them here on the day that rule lands.
+  metrics: []
+
+config:
+  env:
+    # `info`, not staging's `debug`, and this is the data-sensitivity half of
+    # §7's list. staging logs at debug because §7 puts the DAST and perf runs
+    # there and its dataset is anonymised, so request-level detail is how a
+    # failed scan is explained and there is nothing in it to be careful with.
+    # UAT's data is "curated realistic; masked" — masked, but modelled on real
+    # attendees — and its users are product and selected stakeholders, so
+    # request logging here would put more about a stakeholder's session into the
+    # log pipeline than an acceptance test needs. Same value as prod, for the
+    # same reason.
+    LOG_LEVEL: info
+    # PLACEHOLDERS, in the loud form values-prod.yaml argues for: both are
+    # outputs of the object-storage module (§1.1, §4), which does not exist
+    # because no cloud provider has been chosen, and a plausible-looking bucket
+    # or region would read like a decision somebody had made. They are still
+    # required — eventa-api/src/config/env.validation.ts constructs the S3
+    # client at startup regardless, so the process refuses to boot without them,
+    # even though no door flow reads an object. UAT gets its own bucket when
+    # these are filled in; §7 keeps raw production PII in production.
+    S3_BUCKET: REPLACE_WITH_UPLOADS_BUCKET
+    S3_REGION: REPLACE_WITH_STORAGE_REGION
+    # `eventa.dev` is the one non-production domain a document actually names —
+    # devops-ci-cd.md §1.1 puts previews on `pr-<n>.preview.eventa.dev` — which
+    # is why all four non-production environments extrapolate from it while
+    # production uses the reserved `eventa.invalid` placeholder (no document
+    # names a production hostname at all; see values-prod.yaml).
+    #
+    # These three are the values ../api/values-uat.yaml already chose, and they
+    # have to stay identical rather than merely similar: §3.2 puts both pools on
+    # the same image in the same namespace, so the same variable answering
+    # differently in the two would mean the door and the api disagreed about
+    # where this product lives.
+    PUBLIC_WEB_URL: https://uat.eventa.dev
+    PUBLIC_API_URL: https://api.uat.eventa.dev
+    # ../web/values-uat.yaml's Ingress host, exactly. The SSR render succeeds
+    # server-side either way, so a mismatch does not fail the deploy or show up
+    # in a probe — it surfaces later, as every browser call from the rendered
+    # page failing CORS. The api image's own `*` default would be worse than a
+    # mismatch: it would make every site on the internet a valid caller of a
+    # session-bearing endpoint.
+    CORS_ORIGINS: https://uat.eventa.dev
+
+externalSecret:
+  # `/eventa/uat/api` — NOT `/eventa/uat/checkin`. This is correct; please do
+  # not "fix" it.
+  #
+  # This pool is the api PROCESS (§3.2: one image, two pools), so it needs the
+  # very same database, Redis and JWT credentials the api release reads. A
+  # `/eventa/uat/checkin` copy of those same values would have to be rotated
+  # twice and would drift the first time somebody rotated only one — §5 makes
+  # rotation zero-touch through the operator's `refreshInterval`, and a second
+  # copy is exactly how that stops being true. Every environment in this chart
+  # does the same: values-dev.yaml, values-staging.yaml and values-prod.yaml all
+  # extract the api's path for their own environment, and values.yaml records
+  # the reasoning.
+  #
+  # What IS per-environment is the `uat` in the middle, and that is the whole
+  # least-privilege boundary: §5 gives each environment its own store path with
+  # IAM scoped per namespace via workload identity, so a pod here cannot read
+  # `/eventa/prod/api` even if somebody pastes that path into this file.
+  dataFrom:
+    - extract:
+        key: /eventa/uat/api
+
+ingress:
+  # `className` is left to the cluster's default IngressClass, as in every other
+  # environment and in every other chart: §3.1 says only that the ingress
+  # controller runs in `platform`, and an Ingress naming a class no controller
+  # claims is ignored by everything.
+  hosts:
+    # Its own hostname rather than a path on the api's, for the mechanical
+    # reason values-prod.yaml gives: the door's routes are
+    # /api/v1/events/{eventId}/check-ins/* and an Ingress `Prefix` path cannot
+    # match a wildcard in the middle of a path, so the split has to be by name.
+    #
+    # The name follows the shape the other environments use —
+    # values-staging.yaml's `checkin.staging.eventa.dev`, values-dev.yaml's
+    # `checkin.dev.eventa.dev` — and sits beside ../web/values-uat.yaml's
+    # `uat.eventa.dev` and ../api/values-uat.yaml's `api.uat.eventa.dev`.
+    - host: checkin.uat.eventa.dev
+      paths:
+        - path: /api/v1
+          pathType: Prefix
+
+# The data subnets for eventa-uat: 10.<env>.<az>.0/24 with the env octet 30, and
+# AZ 1 alone because §8 runs dev, staging and UAT on single-node data services —
+# there is no standby in another zone to allow. Production lists all three zones
+# instead, because §4 gives it a multi-AZ Postgres standby and a three-node
+# RabbitMQ cluster, so its endpoint moves between zones. The scheme is shared by
+# all five charts and written out in full in values.yaml; change it in all of
+# them in one commit, or not at all.
+#
+# These are the same three ranges ../api/values-uat.yaml names, which is the
+# point of setting them under `global`: both pools in `eventa-uat` are the same
+# image talking to the same managed Postgres, Redis and RabbitMQ (§2).
+#
+# PLACEHOLDER — the Terraform network module's output for this environment
+# (§1.1), which does not exist yet because no provider has been chosen. This is
+# the shape, not the address. A wrong value is not a render error: readiness
+# cannot reach Postgres, so no replica ever becomes Ready and the rollout halts
+# — while a too-broad one fails silently, by granting this pool reach into the
+# rest of the VPC. Review it against the module output when it exists, not
+# against the neighbouring environment.
+global:
+  eventa:
+    network:
+      postgresCidrs:
+        - 10.30.1.0/24
+      redisCidrs:
+        - 10.30.1.0/24
+      rabbitmqCidrs:
+        - 10.30.1.0/24

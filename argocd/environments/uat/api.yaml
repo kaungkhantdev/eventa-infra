@@ -11,8 +11,10 @@
 # devops-infrastructure.md §3.3, arrived at by a missing file rather than by a
 # decision. That chart's values-uat.yaml header records it.
 #
-# `checkin` and `worker` are still in that state. See ../../README.md,
-# "Known gaps", and ../../apps/uat.yaml.
+# `checkin` and `worker` were in that state until recently and no longer are:
+# both charts now ship a values-uat.yaml, so all five of UAT's Applications
+# render. ../../apps/uat.yaml records what that means for this environment's
+# root, and ../../README.md, "Known gaps", lists what is still open repo-wide.
 
 # api — the core API, and the only chart of the five that is deployed
 # progressively (devops-ci-cd.md §4.2): its workload object is an Argo Rollouts

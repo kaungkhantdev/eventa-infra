@@ -34,12 +34,16 @@ instead of inheriting somebody else's.
 
 | Absent from `values.yaml` | Why | Where it comes from |
 | --- | --- | --- |
-| `image.tag` | §1.2 makes moving this pinned SHA *the* promotion; ci-cd §2.1 stage 11 has the bot write it | `values-<env>.yaml` |
+| `image.tag` (declared, left empty) | §1.2 makes moving this pinned SHA *the* promotion; ci-cd §2.1 stage 11 has the bot write it | `values-<env>.yaml` |
 | `externalSecret.dataFrom` | §5 gives each environment its own path; a default here would be one environment's secrets inherited by all of them | `values-<env>.yaml` |
 | the data-subnet CIDRs | §2 puts the stores outside the cluster; the ranges are Terraform network-module output | `values-<env>.yaml` |
 
-`helm lint` with no environment file therefore fails, on the missing image tag,
-by design.
+`helm lint` with no environment file therefore fails by design, at `/image` with
+`'anyOf' failed`. Expect the sub-message `at '/image/tag': minLength: got 0,
+want 1` rather than a missing property: this chart's `values.yaml` declares
+`tag` and leaves it empty, so the schema rejects the empty string alongside the
+unset `digest`. (`web`, `checkin` and `relay` omit the key entirely and report
+`missing property 'tag'` instead — the same refusal, a different message.)
 
 ## What this chart adds, and what it inherits
 
@@ -74,26 +78,33 @@ read as oversights:
 | `values.yaml` | — | the production baseline |
 | `values-prod.yaml` | `eventa-prod` | tag, `/eventa/prod/worker`, CIDRs, mail identity |
 | `values-staging.yaml` | `eventa-staging` | the above for staging, plus `LOG_LEVEL: debug` and a ceiling of 4 |
+| `values-uat.yaml` | `eventa-uat` | the above for UAT, plus a ceiling of 3 and no queue-depth metric; keeps `NODE_ENV: production` and declines staging's `LOG_LEVEL: debug` |
 | `values-dev.yaml` | `eventa-dev` | the above for dev, plus `NODE_ENV: development`, `EMAIL_PROVIDER: log`, no queue-depth metric, no external egress, ceiling of 2 |
 
-**There is no `values-uat.yaml`, and UAT is therefore broken.** This is a gap,
-not a design. `argocd/environments/uat/worker.yaml` names
-`valueFiles: [values-uat.yaml]` and carries no `helm.parameters` — no
-Application anywhere in `argocd/` does, because §1.2 makes the values file the
-unit of deployment — so nothing overrides anything, and that Application fails
-with "values file does not exist" on every sync attempt. Its own header opens
-with `THIS APPLICATION CANNOT SYNC YET`. `argocd/README.md` tracks it under
-"Known gaps" and lists what the file has to contain.
+All four of §7's parity environments have an overlay here, so
+`argocd/environments/uat/worker.yaml` renders like the other three. **It is
+worth being precise about how UAT is configured, because this README used to
+describe it wrongly.** An earlier version presented UAT as a deliberate design
+in which this chart's staging overlay was synced with the secret path
+overridden through the Argo CD Application. No such arrangement ever existed or
+could have: that Application carries no `helm.parameters`, and **no Application
+anywhere under `argocd/` carries one**, because §1.2 makes the chart-plus-values
+pair the unit of deployment and §5's per-environment secret path is the entire
+least-privilege boundary — an Application that could rewrite it from outside
+would be a hole in that boundary, not a convenience. What actually happened is
+that the Application named a `values-uat.yaml` that did not exist and reported
+"values file does not exist" on every sync attempt. UAT is now configured the
+way every other environment is: by its own overlay in this directory.
 
-Writing it is three or four keys, by the pattern `web` and `relay` already set:
-`environment: uat`, an `image.tag` placeholder, `externalSecret.dataFrom` at
-`/eventa/uat/worker`, and the UAT data-subnet CIDRs. §7 puts UAT at the same
-parity as staging and differs only in data sensitivity and who has access — both
-of which live in the secrets-manager path and in cluster RBAC rather than in
-this chart — so the file is staging's sizing with UAT's own coordinates. Settle
-the CIDR scheme first: the existing overlays disagree, and `argocd/README.md`
-says why a third opinion before the Terraform network module exists makes that
-harder rather than easier.
+That overlay derives from `values-staging.yaml`, because §7 puts staging at the
+nearest parity, and changes what §7 allows an environment to change — "sizing,
+replica counts, retention, and data sensitivity" — plus the coordinates: the
+image tag, `/eventa/uat/worker`, the CIDRs, and the mail sink. The one thing it
+pointedly does *not* inherit is staging's `LOG_LEVEL: debug`: §7 anonymises
+staging's dataset but calls UAT's "curated realistic; masked", and its users are
+product and selected stakeholders, so handler-level logging of their
+registrations would put more into the log pipeline than an acceptance test
+needs.
 
 `preview-<pr>` is different and really is deliberate: §7 scales previews to zero
 when idle, which is an `hpa.minReplicas: 0` on the preview `ApplicationSet`, not
@@ -253,23 +264,42 @@ application does — in CI, or in an Argo CD diff.
 Four values in this chart are placeholders that only the platform team can
 resolve. Each is marked in the values file it lives in.
 
-1. **`image.tag`** — `sha-0000000` in all three environment files. Deliberately
+1. **`image.tag`** — `sha-0000000` in all four environment files. Deliberately
    a SHA no build produces, so a release synced before its first promotion fails
    to pull rather than quietly running something else.
-2. **The data-subnet CIDRs** — one supernet per environment, to be replaced with
-   the Terraform network module's output. Too narrow fails loudly on the first
-   deploy; too broad fails silently, by granting the worker reach into the rest
-   of the VPC.
+2. **The data-subnet CIDRs** — one `/24` per availability zone, to be replaced
+   with the Terraform network module's output. dev, staging and UAT name AZ 1
+   alone, because §8 runs them on single-node data services and there is no
+   standby in another zone to allow; production names all three
+   (`10.40.1.0/24`, `10.40.2.0/24`, `10.40.3.0/24`), because §4 gives it a
+   multi-AZ Postgres standby and a three-node RabbitMQ cluster, so its endpoint
+   moves between zones. This chart agrees with `api`, `checkin` and `relay`
+   range for range in every environment, which it did not always — change the
+   scheme in all four charts in one commit or not at all. Too narrow fails
+   loudly on the first deploy; too broad fails silently, by granting the worker
+   reach into the rest of the VPC.
 3. **`serviceAccount.annotations`** — empty. §5 grants least-privilege access to
    `/eventa/<env>/*` through workload identity, and §1.1 names the mechanism
    neutrally ("IRSA/workload-identity") because no cloud has been chosen, so
    this chart does not guess at the annotation key. Until it is set, the External
    Secrets Operator falls back to its controller's own identity, which is broader
    than §5 allows.
-4. **`EMAIL_FROM` and `PUBLIC_WEB_URL`** — `eventa.co.th` is the only Eventa
-   domain any document in `eventa-docs` names
-   (`06-testing/test-cases.md:503`), and it is named there as *test data*. No
-   deployment document states the production hostname.
+4. **`EMAIL_FROM` and `PUBLIC_WEB_URL`** — no document in `eventa-docs` states
+   the production hostname. Two domains appear there and neither is one:
+   `eventa.co.th` only as test data (`06-testing/test-cases.md:503`), and
+   `eventa.dev` only as the PR-preview zone (`devops-ci-cd.md` §1.1,
+   `pr-<n>.preview.eventa.dev`). So the four non-production overlays extrapolate
+   from `eventa.dev` — this chart's UAT overlay sends mail as
+   `Eventa UAT <no-reply@uat.eventa.dev>` — while production uses two different
+   placeholders on purpose. `PUBLIC_WEB_URL` takes the reserved zone
+   `www.eventa.invalid`, the one every chart that names a hostname shares —
+   `api`, `checkin`, `web` and this one, ten lines between them, while `relay`
+   names no hostname at all; `EMAIL_FROM` takes
+   `REPLACE_WITH_PRODUCTION_MAIL_DOMAIN` instead, because `templates/_guards.tpl`
+   check 4 refuses a `.invalid` sender under `NODE_ENV=production` — and it is
+   right to, since a valid address on a domain that resolves nowhere is accepted
+   by the provider and junked at the recipient, whereas an unparseable token is
+   rejected loudly at submission. Both stand for the same undecided name.
 
 ## Not yet declared, on purpose
 
@@ -292,11 +322,19 @@ sends the traffic yet and §3.3 allows no undeclared path either way:
 
 ```sh
 helm dependency update deploy/charts/worker
-for e in dev staging prod; do
-  helm lint deploy/charts/worker -f deploy/charts/worker/values-$e.yaml
+for e in dev staging uat prod; do
+  helm lint deploy/charts/worker -f deploy/charts/worker/values-$e.yaml -n eventa-$e
   helm template worker deploy/charts/worker -f deploy/charts/worker/values-$e.yaml -n eventa-$e
 done
 ```
+
+All four environments render the same **7 objects** — ConfigMap, Deployment,
+ExternalSecret, HorizontalPodAutoscaler, NetworkPolicy, PodDisruptionBudget and
+ServiceAccount. Two absences are deliberate: no Service, because §3.3 routes
+ingress to web, api and checkin only, and one NetworkPolicy rather than the
+api's two, because the namespace-wide default-deny belongs to the api chart (the
+one chart every namespace runs) and this policy is additive on top of it.
+Verified with helm 4.3.0.
 
 `kubectl apply --dry-run=client` is **not** usable with no cluster, and not
 because of a flag: it resolves every `kind` through API discovery, so it fails

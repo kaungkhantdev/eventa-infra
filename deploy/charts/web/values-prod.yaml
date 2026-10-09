@@ -18,14 +18,20 @@ ingress:
     # REPLACE THIS BEFORE THE FIRST PRODUCTION SYNC.
     #
     # THE PRODUCTION DOMAIN IS UNDECIDED, and `eventa.invalid` is the single
-    # placeholder all five charts now use for it — api's Ingress, CORS_ORIGINS
-    # and PUBLIC_API_URL, checkin's Ingress, and the links the worker writes
-    # into mail all point at this same zone. They did not before: api asserted
-    # `eventa.dev` while checkin and worker asserted `eventa.co.th`, so three
-    # plausible-looking domains stood side by side and api's CORS_ORIGINS did
-    # not contain the host this Ingress serves — which would have rejected every
-    # browser call from the SSR origin. If this name changes, change it in all
-    # five charts in one commit.
+    # placeholder every chart that names a hostname now uses for it — api's
+    # Ingress, CORS_ORIGINS and PUBLIC_API_URL, checkin's equivalents, and the
+    # links the worker writes into mail all point at this same zone. They did
+    # not before: api asserted `eventa.dev` while checkin and worker asserted
+    # `eventa.co.th`, so three plausible-looking domains stood side by side and
+    # api's CORS_ORIGINS did not contain the host this Ingress serves — which
+    # would have rejected every browser call from the SSR origin.
+    #
+    # If this name changes it is TEN lines in FOUR values-prod.yaml files, in one
+    # commit — not one line per chart. ../api has four (PUBLIC_WEB_URL,
+    # PUBLIC_API_URL, CORS_ORIGINS, its Ingress host), ../checkin has four, this
+    # chart has the one below, ../worker has one (PUBLIC_WEB_URL), and ../relay
+    # has none at all. `grep -rn "eventa.invalid" deploy/charts/*/values-prod.yaml
+    # | grep -v ':[0-9]*: *#'` lists exactly the lines to change.
     #
     # Why no real name can be written yet: no document in eventa-docs names the
     # production hostname. §2 puts CDN → WAF → public load balancer in front of

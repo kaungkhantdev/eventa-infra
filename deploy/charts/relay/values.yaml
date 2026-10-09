@@ -49,12 +49,14 @@ resources:
 # ---------------------------------------------------------------------------
 # The singleton. Read templates/_guard.tpl before touching anything below.
 # ---------------------------------------------------------------------------
-# This is the one place where the chart knowingly contradicts the specification.
-# devops-infrastructure.md §3.2 tabulates relay at a minimum of 2 replicas; the
-# reader that entry describes does not exist. `fetchBatch` takes no row lock, so
-# two replicas select the same rows and publish every event twice, and consumers
-# dedupe only after the first copy has finished — so both concurrent copies are
-# handled and one registration sends the buyer two confirmation emails.
+# Why the relay is pinned is a fact about the service, not about a document.
+# `fetchBatch` takes no row lock, so two replicas select the same rows and
+# publish every event twice, and consumers dedupe only after the first copy has
+# finished — so both concurrent copies are handled and one registration sends
+# the buyer two confirmation emails. devops-infrastructure.md §3.2 records the
+# same count — "exactly 1 — a fixed count, not a minimum" — and names this
+# chart's render guard, so chart and specification agree and the guard is what
+# keeps a values file from leaving both behind.
 #
 # Setting this does four things in the library: the Deployment writes
 # `replicas: 1` as a literal that no `--set` or Argo CD parameter can raise, no
@@ -69,27 +71,30 @@ singleton:
   evidence: "eventa-relay/src/relay/outbox-reader.repository.ts:25"
 
 # Deliberately redundant: the Deployment writes the literal `1` and ignores this
-# value entirely. It is here because this is the first place somebody trying to
-# match §3.2's "2" will edit, and the library's guard reads the chart's own
+# value entirely. It is here because this is the first place somebody who wants a
+# second publisher will edit, and the library's guard reads the chart's own
 # values — so an edit here fails the render with the reason instead of silently
 # doing nothing and sending the next buyer two emails.
 replicas: 1
 
-# No autoscaler, at all. §6 lists "relay scales with outbox lag" and that is the
-# right design once the reader claims rows; until then an HPA's entire job would
-# be to create the replica that must not exist. Outbox lag is still the signal to
-# watch — devops-observability-sre.md §2 pages on it above 120s — it just wakes a
-# human rather than adding a publisher.
+# No autoscaler, at all. Until the reader claims rows an HPA's entire job would be
+# to create the replica that must not exist. §3.2 gives the relay the scaling
+# signal "None — no HPA" and §6's Consumers row says it "does not scale at all",
+# so this is what the specification asks for as well. Outbox lag is still the
+# signal to watch — §6 calls it "an alerting signal, not a scaling signal" and
+# devops-observability-sre.md §2 pages on it above 120s — so it wakes a human
+# rather than adding a publisher.
 hpa:
   enabled: false
 
-# devops-infrastructure.md §3.3: "relay uses maxUnavailable: 0 behavior via
-# minAvailable: 1 to keep at least one publisher live." With a single replica
-# that is zero allowed voluntary disruptions, so `kubectl drain` on this node
-# blocks until an operator deletes the pod by hand. That is the trade the
-# document chose and it is the right one: a momentary gap in publishing is
-# recoverable because the outbox row survives (devops-ci-cd.md §5.3), while two
-# concurrent publishers are not.
+# devops-infrastructure.md §3.3 sets minAvailable: 1 for the relay and draws the
+# consequence itself, in these words: its budget "permits zero voluntary
+# disruptions, and a `kubectl drain` of its node blocks until an operator removes
+# the pod by hand". §3.3 then says the trade is accepted deliberately, because "a
+# gap in publishing is recoverable, because an unpublished outbox row survives
+# and goes out after restart" (devops-ci-cd.md §5.3), while two concurrent
+# publishers are not — and closes with the sentence that matters most here: the
+# budget "must never be satisfied by adding a second replica".
 pdb:
   minAvailable: 1
 

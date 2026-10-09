@@ -45,11 +45,15 @@ config:
     # the CORS_ORIGINS below did not contain the host web is actually served on,
     # so every browser call from the SSR origin would have been rejected.
     #
-    # All five charts now use the one placeholder zone `eventa.invalid`:
-    # reserved by RFC 2606, resolving nowhere, so a forgotten value fails closed
-    # and visibly instead of answering on a name nobody chose. ../web/values-prod.yaml
-    # carries the reasoning in full. When the real domain is decided, change it
-    # in all five charts in one commit.
+    # Every chart that names a hostname now uses the one placeholder zone
+    # `eventa.invalid`: reserved by RFC 2606, resolving nowhere, so a forgotten
+    # value fails closed and visibly instead of answering on a name nobody
+    # chose. ../web/values-prod.yaml carries the reasoning in full.
+    #
+    # When the real domain is decided it is ten lines in four values-prod.yaml
+    # files, in one commit — four here (the two URLs below, CORS_ORIGINS, and
+    # this chart's Ingress host), four in ../checkin, one in ../web and one in
+    # ../worker. ../relay has none: it serves no HTTP and writes no links.
     #
     # PUBLIC_API_URL has to be the address Stripe can actually reach, because
     # organizers paste it into their own Stripe dashboard to register a webhook
@@ -108,9 +112,10 @@ ingress:
   # be a guess that fails closed — an Ingress with an unknown class is ignored
   # by every controller.
   hosts:
-    # PLACEHOLDER, in the one undecided-domain zone all five charts use — see
-    # config.env above. `.invalid` resolves nowhere (RFC 2606), so a forgotten
-    # value leaves the api unreachable and obviously so.
+    # PLACEHOLDER, in the one undecided-domain zone every chart that names a
+    # hostname uses — see config.env above. This is the FOURTH and last of this
+    # chart's four lines on that zone. `.invalid` resolves nowhere (RFC 2606),
+    # so a forgotten value leaves the api unreachable and obviously so.
     - host: api.eventa.invalid
       paths:
         - path: /
