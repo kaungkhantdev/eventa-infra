@@ -1,0 +1,149 @@
+# api — UAT (namespace `eventa-uat`, devops-infrastructure.md §3.1/§7).
+#
+# §7 names UAT one of the four parity environments: business and stakeholder
+# acceptance, curated and masked data, reached by gated promotion
+# (devops-ci-cd.md §4.1). This file exists because without it the api has no UAT
+# deployment at all, and three things follow from that absence rather than from
+# any decision:
+#
+#   1. NO NAMESPACE-WIDE DEFAULT-DENY IN `eventa-uat`. §3.3 starts from
+#      "default-deny per namespace, then explicit allows". That object is
+#      namespace-scoped, so exactly one release per namespace owns it, and
+#      ../_library/README.md puts it on the api because the api is the one chart
+#      every namespace runs. With no api release in UAT, `web` and `relay` ran
+#      there with every pod-to-pod path open — the opposite of §3.3, arrived at
+#      by a missing file.
+#   2. No destination for web's SSR calls. ../web ships a values-uat.yaml, and
+#      its only in-cluster dependency is this chart (`http://api/api/v1`).
+#   3. `../../../argocd/environments/uat/api.yaml` already names
+#      `values-uat.yaml` in its `valueFiles`, so the Application could not sync
+#      and reported a missing values file.
+#
+# Like staging, this file differs from the production baseline in values.yaml
+# only in its sizing and its coordinates (§7: environments differ in "sizing,
+# replica counts, retention, and data sensitivity").
+
+environment: uat
+
+image:
+  # PLACEHOLDER. Gated promotion, not the bot: devops-ci-cd.md §4.1 promotes
+  # into UAT behind a product/QA approval, and §3 moves the identical signed
+  # digest that passed staging rather than rebuilding it.
+  tag: sha-0000000
+
+# §8 keeps the non-production environments small, and §7 lists replica count as
+# one of the things an environment may differ in. UAT is for acceptance, not
+# load — §7 puts the perf checks in staging — so the ceiling is low.
+#
+# The floor is 2 rather than 1 for two reasons that both come from the rest of
+# the chart: §3.3's `minAvailable: 50%` PodDisruptionBudget against a floor of 1
+# rounds up to 1 and leaves zero allowed disruptions, so a node drain would
+# block on a hand-deleted pod in the middle of an acceptance session; and a
+# canary step needs a stable pod to measure the canary against.
+replicas: 2
+hpa:
+  minReplicas: 2
+  maxReplicas: 6
+
+  # CPU only, exactly as in values-dev.yaml and for the same mechanism: the RPS
+  # and p95-latency entries in values.yaml name series that no Prometheus
+  # adapter in this repo publishes, and an HPA that cannot read a custom metric
+  # keeps scaling UP on what it can read while refusing every scale-IN, because
+  # the unreadable metric might be the one asking for more replicas. In an
+  # environment that sits idle between acceptance sessions that means parking at
+  # the high-water mark and billing for it, which is what §8 asks non-prod not
+  # to do. values-staging.yaml deliberately keeps both entries, because staging
+  # is where a missing adapter rule should be discovered.
+  metrics: []
+
+config:
+  env:
+    # LOG_LEVEL stays at the baseline `info`: §7 gives UAT curated realistic
+    # data, masked but modelled on real attendees, so debug-level request
+    # logging here would put more about a stakeholder's session into the log
+    # pipeline than the environment needs.
+    #
+    # The hostnames follow the non-production domain the documents do name —
+    # devops-ci-cd.md §1.1's `pr-<n>.preview.eventa.dev` — which is also what
+    # ../web/values-uat.yaml serves on. Production's domain is undecided and
+    # uses a reserved placeholder instead; see values-prod.yaml.
+    PUBLIC_WEB_URL: https://uat.eventa.dev
+    PUBLIC_API_URL: https://api.uat.eventa.dev
+    # Must be the origin ../web/values-uat.yaml is served from, exactly: the SSR
+    # render succeeds server-side either way, and a mismatch surfaces only as
+    # the browser's follow-up calls failing CORS.
+    CORS_ORIGINS: https://uat.eventa.dev
+    # PLACEHOLDER (object storage). Loud REPLACE_ tokens, the convention
+    # ../checkin/values-prod.yaml argues for: both are outputs of the
+    # object-storage module (§1.1), which does not exist, and a plausible bucket
+    # name would read like a decision somebody had made. UAT gets its own
+    # bucket when these are filled in — §7 keeps raw production PII in
+    # production.
+    S3_BUCKET: REPLACE_WITH_UPLOADS_BUCKET
+    S3_REGION: REPLACE_WITH_STORAGE_REGION
+
+externalSecret:
+  # §5: per-environment paths with least-privilege IAM per namespace, so a UAT
+  # pod cannot read production credentials even if somebody pastes the prod path
+  # here. `extract` pulls every key at the path.
+  enabled: true
+  dataFrom:
+    - extract:
+        key: /eventa/uat/api
+
+ingress:
+  enabled: true
+  # `className` is left to the cluster's default IngressClass for the same
+  # reason as in every other environment: §3.1 says only that the controller
+  # runs in `platform`, and an Ingress with a class no controller claims is
+  # ignored by everything.
+  hosts:
+    - host: api.uat.eventa.dev
+      paths:
+        - path: /
+          pathType: Prefix
+
+networkPolicy:
+  egress:
+    # §3.3's api → Postgres/Redis/RabbitMQ. See values-dev.yaml for why the
+    # toggles sit in the overlay beside the list, and for what
+    # templates/_validate.tpl requires of an environment render.
+    postgres:
+      enabled: true
+    redis:
+      enabled: true
+    rabbitmq:
+      enabled: true
+
+# The data subnets for eventa-uat: 10.<env>.<az>.0/24 with the env octet 30, and
+# AZ 1 alone because §8 runs dev, staging and UAT on single-node data services.
+# The scheme, shared by all five charts, is in values.yaml. PLACEHOLDER — the
+# network module's output for this environment (§1.1), which does not exist yet.
+global:
+  eventa:
+    network:
+      postgresCidrs:
+        - 10.30.1.0/24
+      redisCidrs:
+        - 10.30.1.0/24
+      rabbitmqCidrs:
+        - 10.30.1.0/24
+
+canary:
+  analysis:
+    # PLACEHOLDER (metric sink) — the Prometheus in this cluster's `platform`
+    # namespace (§3.1, devops-observability-sre.md §1), the same address
+    # staging and prod use. Required: values.yaml enables the analysis and
+    # templates/_validate.tpl refuses to render a Prometheus gate with no
+    # address, because an unreachable provider makes every measurement an error
+    # and aborts the deploy for a reason unrelated to the build.
+    #
+    # The analysis stays ON here, unlike in dev. §4.2's gates query series the
+    # api does not emit yet, so until they exist Argo Rollouts records each
+    # measurement as inconclusive and PAUSES at the first step rather than
+    # promoting an unmeasured build. In dev that would break §4.1's auto-sync on
+    # every merge, which is why values-dev.yaml turns it off; UAT is promoted by
+    # a human approval already, so a pause waits for somebody who is present.
+    # Worth knowing before the first UAT sync: the first deploy will wait at
+    # 10%.
+    prometheusAddress: http://prometheus-server.platform.svc.cluster.local:9090

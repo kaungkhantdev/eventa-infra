@@ -30,15 +30,16 @@ externalSecret:
     - extract:
         key: /eventa/dev/relay
 
-# One CIDR per store rather than production's three: §8 runs the non-production
-# environments on single-node data services, so there is no standby in another
-# zone for the endpoint to fail over to. PLACEHOLDERS from the Terraform network
-# module (§1.1), which does not exist yet.
-networkPolicy:
-  egress:
-    postgres:
-      cidrs:
-        - 10.10.3.0/24
-    rabbitmq:
-      cidrs:
-        - 10.10.3.0/24
+# The data subnets for eventa-dev: 10.<env>.<az>.0/24 with the env octet 10, and
+# AZ 1 alone rather than production's three zones, because §8 runs the
+# non-production environments on single-node data services — there is no standby
+# in another zone for the endpoint to fail over to. The scheme, shared by all
+# five charts, is in values.yaml. PLACEHOLDER — the Terraform network module's
+# output for this environment (§1.1), which does not exist yet.
+global:
+  eventa:
+    network:
+      postgresCidrs:
+        - 10.10.1.0/24
+      rabbitmqCidrs:
+        - 10.10.1.0/24

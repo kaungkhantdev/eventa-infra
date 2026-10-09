@@ -7,11 +7,17 @@
 # (src/config/env.validation.ts:148, :182) and keeps the mail path identical to
 # prod's. What differs is the data, the credentials and the ceiling.
 #
-# There is no values-uat.yaml. §7 puts UAT at the same parity as staging and
-# differs only in data sensitivity and who has access, both of which live in the
-# secrets-manager path and in cluster RBAC rather than in this chart — so UAT
-# syncs this file with `/eventa/uat/worker` overridden by its Argo CD
-# Application, rather than a fourth near-copy of it.
+# There is still no values-uat.yaml, so this chart has no UAT deployment. This
+# header used to say that UAT "syncs this file with `/eventa/uat/worker`
+# overridden by its Argo CD Application". It does not:
+# `../../../argocd/environments/uat/worker.yaml` names `values-uat.yaml` in its
+# `valueFiles` and carries no `helm.parameters` at all, so that Application
+# reports a missing values file rather than deploying this one — as its own
+# header says. §7 lists UAT as one of four parity environments, so the gap is
+# real; whether it closes with a fourth overlay here or with a change to that
+# Application is recorded there and is not settled in this file.
+# ../api/values-uat.yaml now exists because `eventa-uat` cannot have a
+# namespace-wide default-deny without it (§3.3, ../_library/README.md).
 
 environment: staging
 
@@ -43,11 +49,20 @@ config:
     # trap): `networkPolicy.egress.external` carves out every private range, so
     # it will NOT reach a pod. Replace it with a `networkPolicy.egress.toPods`
     # entry naming the sink's namespace and port.
-    EMAIL_FROM: Eventa Staging <no-reply@staging.eventa.co.th>
+    #
+    # The domain is `eventa.dev`, which devops-ci-cd.md §1.1 names for preview
+    # environments and which ../web/values-staging.yaml serves staging on. It
+    # used to read `eventa.co.th`, a domain that appears in eventa-docs only as
+    # fixture data (06-testing/test-cases.md:503) and that web has never served
+    # — so the sender and the links below named a host nothing in this
+    # repository deploys.
+    EMAIL_FROM: Eventa Staging <no-reply@staging.eventa.dev>
     # Links in staging mail should land on staging, so a tester following one
-    # from the sink does not end up acting on production. Same caveat as prod:
-    # confirm the host against DNS (see values-prod.yaml).
-    PUBLIC_WEB_URL: https://staging.eventa.co.th
+    # from the sink does not end up acting on production. It has to be
+    # ../web/values-staging.yaml's Ingress host exactly. Same caveat as prod:
+    # mail from this domain is only delivered once the provider holds SPF and
+    # DKIM records for it (see values-prod.yaml).
+    PUBLIC_WEB_URL: https://staging.eventa.dev
 
 hpa:
   # minReplicas stays at the baseline 2. §8 lowers non-prod replica COUNTS, and
@@ -60,12 +75,17 @@ hpa:
   # does not.
   maxReplicas: 4
 
+# The data subnets for eventa-staging: 10.<env>.<az>.0/24 with the env octet 20,
+# and AZ 1 alone because §8 runs the non-production environments on single-node
+# data services. The scheme, shared by all five charts, is in values.yaml.
+# PLACEHOLDER — the network module's output for this environment (§1.1), which
+# does not exist yet; see values-prod.yaml for what a wrong value costs.
 global:
   eventa:
     network:
-      # PLACEHOLDER — Terraform network module output for staging. See
-      # values-prod.yaml for why one supernet covers all three stores and for
-      # what a wrong value costs.
-      postgresCidrs: ["10.20.8.0/21"]
-      redisCidrs: ["10.20.8.0/21"]
-      rabbitmqCidrs: ["10.20.8.0/21"]
+      postgresCidrs:
+        - 10.20.1.0/24
+      redisCidrs:
+        - 10.20.1.0/24
+      rabbitmqCidrs:
+        - 10.20.1.0/24

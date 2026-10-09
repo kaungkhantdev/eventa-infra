@@ -5,11 +5,17 @@
 # The reference stays anyway, because that error names the fix. `web` and
 # `relay` both ship a values-uat.yaml and both explain in its header why a
 # fourth overlay was needed; these three charts were built with dev, staging and
-# prod only. Nothing here is unsafe either way — every chart refuses to render
-# without an environment overlay, and checkin fails its values schema on the
-# missing `image.tag` —
-# but those messages send the reader into the chart's templates, while a
-# missing-file error sends them to the file that is actually missing.
+# prod only.
+#
+# Nothing here is unsafe either way. This chart refuses to render on
+# `values.yaml` alone — it fails its values schema on the missing `image.tag` —
+# so there is no baseline-only manifest that could land in `eventa-uat`. But
+# that refusal reports a JSON Schema path, while a missing-file error names the
+# file that is missing.
+#
+# Do not reach for `ignoreMissingValueFiles` to quiet this: it would not make
+# the Application sync, only swap the message that names the file for the one
+# that does not. ../../apps/uat.yaml records that in full.
 # ../../README.md says what the overlay has to contain.
 
 # checkin — the door-scan pool: the SAME `api` image in its own Deployment and

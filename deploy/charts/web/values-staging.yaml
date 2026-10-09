@@ -16,6 +16,13 @@ image:
 # starts, so the floor is the part that can safely be cheaper.
 hpa:
   minReplicas: 2
+  # `hpa.metrics` is deliberately NOT cleared here, unlike in dev and UAT. The
+  # RPS entry from values.yaml names a series no adapter publishes yet, and
+  # staging is the environment §7 puts the perf checks in — so this is where a
+  # missing adapter rule should surface, as a FailedGetPodsMetric on an HPA
+  # somebody is already watching, rather than during an on-sale in production.
+  # ../api/values-staging.yaml and ../checkin/values-staging.yaml keep their
+  # custom metrics for the same reason.
 
 ingress:
   hosts:

@@ -13,7 +13,7 @@ appVersion: "0.0.1"
 
 dependencies:
   # Probes, HPA, PDB, NetworkPolicy, ExternalSecret and the Deployment skeleton
-  # all come from here, so this chart is values plus four guards rather than a
+  # all come from here, so this chart is values plus five guards rather than a
   # copy of the other four services' templates. devops-infrastructure.md §1.2
   # asks for exactly that: "shared templates ... live in a common library chart
   # to keep the four services consistent."

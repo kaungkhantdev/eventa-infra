@@ -69,12 +69,17 @@ networkPolicy:
       # traffic is just a hole nobody is watching.
       enabled: false
 
+# The data subnets for eventa-dev: 10.<env>.<az>.0/24 with the env octet 10, and
+# AZ 1 alone because §8 runs the non-production environments on single-node data
+# services. The scheme, shared by all five charts, is in values.yaml.
+# PLACEHOLDER — the network module's output for this environment (§1.1), which
+# does not exist yet; see values-prod.yaml for what a wrong value costs.
 global:
   eventa:
     network:
-      # PLACEHOLDER — Terraform network module output for dev. See
-      # values-prod.yaml for why one supernet covers all three stores and for
-      # what a wrong value costs.
-      postgresCidrs: ["10.10.8.0/21"]
-      redisCidrs: ["10.10.8.0/21"]
-      rabbitmqCidrs: ["10.10.8.0/21"]
+      postgresCidrs:
+        - 10.10.1.0/24
+      redisCidrs:
+        - 10.10.1.0/24
+      rabbitmqCidrs:
+        - 10.10.1.0/24

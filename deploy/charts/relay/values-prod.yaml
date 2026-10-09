@@ -39,10 +39,11 @@ externalSecret:
     - extract:
         key: /eventa/prod/relay
 
-# The data subnets, one per availability zone. These come from the Terraform
-# network module's output for this environment (§1.1) and are PLACEHOLDERS until
-# that module exists — no cloud provider has been chosen, so no real range can
-# be written here yet.
+# The data subnets, one per availability zone: 10.<env>.<az>.0/24 with the env
+# octet 40 and all three zones. The scheme, shared by all five charts, is in
+# values.yaml. These come from the Terraform network module's output for this
+# environment (§1.1) and are PLACEHOLDERS until that module exists — no cloud
+# provider has been chosen, so no real range can be written here yet.
 #
 # All three zones are listed on purpose. Production Postgres is primary + read
 # replica with automatic failover to the standby, and RabbitMQ is a three-node
@@ -50,15 +51,17 @@ externalSecret:
 # failover. An allow covering only the current primary's subnet works perfectly
 # until the first failover, and then the relay stops publishing and the
 # NetworkPolicy is the last place anyone looks.
-networkPolicy:
-  egress:
-    postgres:
-      cidrs:
+#
+# The zones are now 1-3 rather than this file's previous 3-5, so that every
+# chart enumerates the same three /24s for the same environment.
+global:
+  eventa:
+    network:
+      postgresCidrs:
+        - 10.40.1.0/24
+        - 10.40.2.0/24
         - 10.40.3.0/24
-        - 10.40.4.0/24
-        - 10.40.5.0/24
-    rabbitmq:
-      cidrs:
+      rabbitmqCidrs:
+        - 10.40.1.0/24
+        - 10.40.2.0/24
         - 10.40.3.0/24
-        - 10.40.4.0/24
-        - 10.40.5.0/24

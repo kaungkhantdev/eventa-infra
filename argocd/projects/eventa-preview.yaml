@@ -11,12 +11,19 @@
 # review and does the wrong thing on apply, for three reasons that are all
 # outside argocd/:
 #
-#   1. No chart has a `values-preview.yaml`, and none of the five renders
-#      without an environment overlay — each refuses on its own guards (the
-#      api on a missing Prometheus address, checkin and worker on a missing
-#      image tag). So a preview Application has no values to point at, and
-#      writing one means deciding a preview's sizing, hostname, secret path
-#      and data-store addresses, which is chart work and not Argo CD's.
+#   1. No chart has a `values-preview.yaml`, so a preview Application has no
+#      values to point at. Writing one means deciding a preview's sizing,
+#      hostname, secret path and data-store addresses, which is chart work and
+#      not Argo CD's.
+#
+#      None of the five renders on `values.yaml` alone, and they refuse for two
+#      different reasons: `web`, `checkin`, `worker` and `relay` fail their
+#      values schema at `/image`, having neither a usable tag nor a digest,
+#      while `api` gets past the schema and fails in its templates, on
+#      `canary.analysis` having no Prometheus address. So there is no
+#      baseline-only manifest for a preview to fall back on — which is the safe
+#      direction, and the reason a preview needs a real values file rather than
+#      a flag that tolerates a missing one.
 #   2. Nothing in this repo deploys the ephemeral data stores §1.1 requires.
 #      The four parity environments reach managed Postgres/Redis/RabbitMQ in
 #      private data subnets by CIDR (§2); a preview is supposed to run its own

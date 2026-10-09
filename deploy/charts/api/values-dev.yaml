@@ -45,9 +45,20 @@ config:
     PUBLIC_WEB_URL: https://dev.eventa.dev
     PUBLIC_API_URL: https://api.dev.eventa.dev
     CORS_ORIGINS: https://dev.eventa.dev
-    # PLACEHOLDER (object storage).
-    S3_BUCKET: eventa-dev-uploads
-    S3_REGION: REPLACE_WITH_TERRAFORM_OBJECT_STORAGE_REGION
+    # PLACEHOLDER (object storage). Both are loud REPLACE_ tokens rather than
+    # plausible names, which is the convention ../checkin/values-prod.yaml
+    # argues for and which this chart now follows: api and checkin are the same
+    # image in the same namespace reading the same bucket (§3.2), so a
+    # plausible-looking guess in one file and a token in the other was the worst
+    # of both. `eventa-dev-uploads` read like a decision somebody had made; it
+    # was not one. Both values are outputs of the object-storage module (§1.1),
+    # which does not exist yet.
+    #
+    # The bucket stays per-environment when it is filled in: §7 keeps raw
+    # production PII out of the lower environments, so one shared bucket would
+    # put attendee uploads in reach of a DAST run.
+    S3_BUCKET: REPLACE_WITH_UPLOADS_BUCKET
+    S3_REGION: REPLACE_WITH_STORAGE_REGION
 
 externalSecret:
   enabled: true
@@ -65,26 +76,34 @@ ingress:
 
 networkPolicy:
   egress:
-    # PLACEHOLDER (data subnets) — the network module's data-subnet outputs for
-    # this environment.
+    # §3.3's api → Postgres/Redis/RabbitMQ. The toggles live in the overlay
+    # rather than in values.yaml because a store enabled with no CIDR is a
+    # render error — the rule would allow every destination instead of none — so
+    # the toggle and the list travel together. templates/_validate.tpl refuses
+    # an environment render that declares no data-store egress at all: either
+    # all three of these toggles, or `egress.toPods` for a PR preview's own
+    # ephemeral stores (devops-ci-cd.md §1.1).
     postgres:
       enabled: true
-      cidrs:
-        - 10.10.1.0/24
-        - 10.10.2.0/24
-        - 10.10.3.0/24
     redis:
       enabled: true
-      cidrs:
-        - 10.10.1.0/24
-        - 10.10.2.0/24
-        - 10.10.3.0/24
     rabbitmq:
       enabled: true
-      cidrs:
+
+# The data subnets for eventa-dev. The scheme, and why the same one is used by
+# all five charts, is in values.yaml: 10.<env>.<az>.0/24, env octet 10 for dev,
+# and AZ 1 alone because §8 runs the non-production environments on single-node
+# data services. PLACEHOLDER — replace with the Terraform network module's
+# output for this environment (§1.1), which does not exist yet.
+global:
+  eventa:
+    network:
+      postgresCidrs:
         - 10.10.1.0/24
-        - 10.10.2.0/24
-        - 10.10.3.0/24
+      redisCidrs:
+        - 10.10.1.0/24
+      rabbitmqCidrs:
+        - 10.10.1.0/24
 
 canary:
   # The Rollout and its steps stay — dev is where a canary that cannot roll out

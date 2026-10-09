@@ -53,20 +53,38 @@ config:
   env:
     # The sender every confirmation, reminder and announcement goes out as.
     #
-    # CONFIRM THIS BEFORE THE FIRST PRODUCTION SYNC. `eventa.co.th` is the only
-    # Eventa domain any document in eventa-docs names (06-testing/test-cases.md:503),
-    # and it is named there as test data — no deployment document states the
-    # production hostname. The address must be on the domain whose SPF and DKIM
-    # records the production mail provider actually holds, or mail is accepted
-    # by the provider, counted as sent, and junked at the recipient.
-    EMAIL_FROM: Eventa <no-reply@eventa.co.th>
+    # REPLACE THIS BEFORE THE FIRST PRODUCTION SYNC. The production domain is
+    # UNDECIDED: no document in eventa-docs/07-deployment names a production
+    # hostname, and `eventa.co.th` — which this line used to assert — appears in
+    # eventa-docs only as fixture data (06-testing/test-cases.md:503). The
+    # address has to be on the domain whose SPF and DKIM records the production
+    # mail provider actually holds, or mail is accepted by the provider, counted
+    # as sent, and junked at the recipient.
+    #
+    # Why a REPLACE_ token here while the hostnames below and in the other four
+    # charts use the reserved zone `eventa.invalid`: this chart's own guard
+    # refuses a `.invalid` sender under NODE_ENV=production (templates/_guards.tpl,
+    # check 4), and it is right to. A syntactically valid address on a domain
+    # that resolves nowhere is accepted by the provider and junked silently at
+    # the recipient, which is the failure this whole comment is about. A token
+    # that is not a parseable domain is rejected at submission instead — loudly,
+    # by the provider, on the first send. Both are placeholders for the same
+    # undecided name; they fail in different places because mail and HTTP fail
+    # in different places.
+    EMAIL_FROM: Eventa <no-reply@REPLACE_WITH_PRODUCTION_MAIL_DOMAIN>
     # Links written into email: the survey link in the post-event thank-you
     # (US-MSG-08), the tickets in a reminder, and the page a waitlist offer is
     # paid on (US-REG-04). Optional to eventa-worker — without it the thank-you
     # job declines to run and says why (src/config/env.validation.ts:55) —
     # which is the right behaviour for a dev box and the wrong one here.
-    # Same caveat as EMAIL_FROM: confirm the host against public DNS.
-    PUBLIC_WEB_URL: https://eventa.co.th
+    #
+    # It must be the host ../web/values-prod.yaml actually serves, which is the
+    # same undecided domain in its own placeholder form: `.invalid` is reserved
+    # by RFC 2606 and resolves nowhere, so a link that reaches a recipient
+    # before the domain is settled fails in the browser rather than landing on
+    # somebody else's site. All five charts share this zone; see
+    # ../web/values-prod.yaml for the reasoning and change it everywhere at once.
+    PUBLIC_WEB_URL: https://www.eventa.invalid
 
 global:
   eventa:
@@ -75,17 +93,32 @@ global:
       # services reachable only from the app subnets, so §3.3's allows are
       # ipBlock CIDRs rather than pod selectors.
       #
+      # 10.<env>.<az>.0/24 with the env octet 40, and all three availability
+      # zones. The scheme, shared by all five charts, is in values.yaml.
+      # Production lists every zone because §4 gives Postgres automatic failover
+      # to a multi-AZ standby and RabbitMQ a three-node cluster, so the endpoint
+      # moves between zones and a one-zone allow works until the first failover.
+      # The three keys stay separate so that moving one store to its own subnet
+      # is a one-line change.
+      #
       # PLACEHOLDER — replace with the Terraform network module's output for
-      # this environment. §2 puts all three stores in the data subnets, which is
-      # why one supernet covers all three here; the per-store ports in the
-      # library's defaults are what keep the three allows distinct, and the
-      # three keys stay separate so moving one store to its own subnet is a
-      # one-line change.
+      # this environment. This file used to carry a single /21 supernet while
+      # the other four charts carried /24s; a supernet errs in the direction
+      # that fails silently, which is the wrong direction to err in here.
       #
       # A CIDR that is too narrow fails loudly on the first deploy — readiness
       # cannot reach the database, so the rollout halts. One that is too broad
       # fails silently, by granting the worker reach into the rest of the VPC.
       # Review this against the module output, not against the last environment.
-      postgresCidrs: ["10.40.8.0/21"]
-      redisCidrs: ["10.40.8.0/21"]
-      rabbitmqCidrs: ["10.40.8.0/21"]
+      postgresCidrs:
+        - 10.40.1.0/24
+        - 10.40.2.0/24
+        - 10.40.3.0/24
+      redisCidrs:
+        - 10.40.1.0/24
+        - 10.40.2.0/24
+        - 10.40.3.0/24
+      rabbitmqCidrs:
+        - 10.40.1.0/24
+        - 10.40.2.0/24
+        - 10.40.3.0/24

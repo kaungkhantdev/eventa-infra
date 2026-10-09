@@ -35,11 +35,14 @@ config:
     PUBLIC_WEB_URL: https://staging.eventa.dev
     PUBLIC_API_URL: https://api.staging.eventa.dev
     CORS_ORIGINS: https://staging.eventa.dev
-    # PLACEHOLDER (object storage). A separate bucket per environment, because
-    # §7 forbids raw prod PII outside production and a shared bucket would put
-    # attendee uploads in reach of a DAST run.
-    S3_BUCKET: eventa-staging-uploads
-    S3_REGION: REPLACE_WITH_TERRAFORM_OBJECT_STORAGE_REGION
+    # PLACEHOLDER (object storage). Loud REPLACE_ tokens rather than plausible
+    # names — see values-dev.yaml for why, and ../checkin/values-prod.yaml for
+    # the argument this chart adopted. A separate bucket per environment is
+    # still the requirement when these are filled in, because §7 forbids raw
+    # prod PII outside production and a shared bucket would put attendee uploads
+    # in reach of a DAST run.
+    S3_BUCKET: REPLACE_WITH_UPLOADS_BUCKET
+    S3_REGION: REPLACE_WITH_STORAGE_REGION
 
 externalSecret:
   enabled: true
@@ -57,28 +60,42 @@ ingress:
 
 networkPolicy:
   egress:
-    # PLACEHOLDER (data subnets) — the network module's data-subnet outputs for
-    # this environment. Deliberately a different range from prod's: these lists
-    # are the only thing stopping a staging pod from reaching the production
-    # database if the two environments ever share a VPC peering.
+    # §3.3's api → Postgres/Redis/RabbitMQ. See values-dev.yaml for why the
+    # toggles sit in the overlay next to the list rather than in values.yaml.
     postgres:
       enabled: true
-      cidrs:
-        - 10.20.1.0/24
-        - 10.20.2.0/24
-        - 10.20.3.0/24
     redis:
       enabled: true
-      cidrs:
-        - 10.20.1.0/24
-        - 10.20.2.0/24
-        - 10.20.3.0/24
     rabbitmq:
       enabled: true
-      cidrs:
+
+# The data subnets for eventa-staging: 10.<env>.<az>.0/24 with the env octet 20,
+# AZ 1 alone because §8 runs the non-production environments on single-node data
+# services. The scheme, shared by all five charts, is in values.yaml.
+# PLACEHOLDER — the network module's output for this environment (§1.1).
+#
+# Staging's octet is disjoint from production's on purpose. This file used to go
+# further and call these lists "the only thing stopping a staging pod from
+# reaching the production database", which was wrong twice over: §2 reaches the
+# data tier "only from app subnets via NetworkPolicy + security groups", so the
+# policy is one of two controls rather than the only one — and the claim was
+# falsified by the charts themselves, because ../checkin/values-staging.yaml
+# listed 10.30.x for staging while ../api/values-prod.yaml listed 10.30.x for
+# production. One of staging's own allow lists named production's range.
+#
+# What is true is narrower and worth keeping: a disjoint range is a control for
+# exactly as long as every chart in the environment agrees on the scheme. That
+# is why the scheme is now stated in all five charts and why the octets are
+# assigned once.
+global:
+  eventa:
+    network:
+      postgresCidrs:
         - 10.20.1.0/24
-        - 10.20.2.0/24
-        - 10.20.3.0/24
+      redisCidrs:
+        - 10.20.1.0/24
+      rabbitmqCidrs:
+        - 10.20.1.0/24
 
 canary:
   analysis:

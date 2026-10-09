@@ -18,10 +18,26 @@ FinOps),
 §5.1 gated migrations, §5.3 draining) and
 [`devops-observability-sre.md`](../../../../eventa-docs/08-maintenance/devops-observability-sre.md)
 (§1 signals, §2 outbox lag). Every object comes from the shared
-[`_library`](../_library) chart; this chart is values plus one guard.
+[`_library`](../_library) chart; this chart is values plus `templates/_guard.tpl`,
+which adds two refusals of its own.
 
-There is **one place it knowingly contradicts the specification** — the replica
-count — and that is the first section below.
+This is the chart that departs from the documents most, in **five** places, and
+they are not all the same kind of departure:
+
+| | Departure | Kind |
+| --- | --- | --- |
+| 1 | **1 replica**, not §3.2's minimum of 2 | the document is wrong — [next section](#the-singleton-guard) |
+| 2 | **no HPA**, against §3.2's "CPU + outbox lag", §6's "`relay` scales with outbox lag", and `devops-ci-cd.md` §0's "1 Deployment + HPA (singleton-safe)" | the same defect, in four more entries |
+| 3 | **no `/metrics`**, against observability §1's "all 5 workloads" | the image has no server to scrape |
+| 4 | **no probes**, against §3.3's exec/TCP checks and ci-cd §4.3's "every workload defines startup, readiness, liveness" | the image has no health check to call |
+| 5 | **no Redis egress**, against §3.3's "api/checkin/worker/relay → Postgres/Redis/RabbitMQ" | the service has no `REDIS_URL` |
+
+Items 1 and 2 are the first section below; 3, 4 and 5 are under
+[What the chart does *not* render](#what-the-chart-does-not-render-and-why).
+`Chart.yaml`'s `eventa.io/spec-deviations` annotation carries all five, and
+`eventa-infra/README.md` warning 4 lists the five corrections `eventa-docs`
+needs — including `devops-ci-cd.md` §0, which is easy to miss because the
+better-known defect is §3.2's.
 
 ## The singleton guard
 
@@ -107,8 +123,9 @@ SELECT count(*), min(created_at) AS oldest
   FROM outbox_events WHERE published_at IS NULL;
 ```
 
-`values.yaml` carries the exact three-line change that turns the probes on the
-day a readiness CLI lands. The library validates it: enabling readiness today
+`values.yaml` carries the exact commented-out block to uncomment on the day a
+readiness CLI lands — and says to leave liveness off even then, unless the relay
+gains a check that can distinguish a wedged event loop from a healthy one. The library validates it: enabling readiness today
 fails the render, because the default HTTP handler names a port this workload
 does not declare.
 
@@ -117,7 +134,7 @@ does not declare.
 | Concern | Value | Source |
 | --- | --- | --- |
 | Replicas | **1, literal** | the guard above |
-| Autoscaling | none | §3.2, the guard above |
+| Autoscaling | none | the guard above — and **against** §3.2, §6 and ci-cd §0, which all specify one (deviation 2) |
 | CPU / memory | 100m–500m / 256Mi–512Mi | §3.3 |
 | PodDisruptionBudget | `minAvailable: 1` | §3.3 |
 | Rollout | `RollingUpdate`, `maxSurge: 0`, `maxUnavailable: 1` | ci-cd §4.2, §5.3 |
@@ -169,12 +186,43 @@ zero when idle through the HPA, and the relay has none — a preview namespace r
 one 100m/256Mi pod for its lifetime. That is also the floor everywhere else,
 which is why no environment sizes the relay down.
 
-**And neither can you.** `replicas: 0` renders as `1` like every other value,
-because the literal in the Deployment is the whole point. To stop publishing for
-a maintenance window, suspend the Argo CD Application — scaling the Deployment
-by hand is drift that self-heal reverts (§1.3). Nothing is lost either way:
-unpublished rows accumulate with `published_at IS NULL` and drain when the relay
-returns (`eventa-relay/README.md:19-20`).
+**And neither can you, from Git.** `replicas: 0` renders as `1` like every other
+value, because the literal in the Deployment is the whole point. So a
+maintenance window is a cluster-side act, and what it takes differs per
+environment — check which one you are in before you start.
+
+| Environment | `syncPolicy` | What happens to `kubectl scale deployment/relay --replicas=0` |
+| --- | --- | --- |
+| dev, staging, UAT | `automated` with `selfHeal: true` | Argo CD reverts it to the chart's `1` at the next reconciliation. Turn auto-sync off for that Application first, or the window closes itself. |
+| **prod** | **no `automated` block at all** | **It persists.** Nothing reverts it. The Application reports OutOfSync until a human syncs. |
+
+**To stop publishing in production:**
+
+```sh
+kubectl scale deployment/relay -n eventa-prod --replicas=0
+# … window …
+# Restore by SYNCING the Application, not by scaling back up: the sync reapplies
+# the chart's literal `replicas: 1` and returns the cluster to matching Git.
+```
+
+Nothing is lost while it is down: unpublished rows accumulate with
+`published_at IS NULL` and drain when the relay returns
+(`eventa-relay/README.md:19-20`). The PodDisruptionBudget does not block this —
+`minAvailable: 1` is checked by the eviction API, and a scale-down deletes the
+pod through the ReplicaSet controller instead.
+
+> **The guard does not reach the cluster, and production has no safety net.**
+> Every refusal this chart ships is a *render-time* refusal, and a `kubectl
+> scale` never renders the chart. In dev, staging and UAT self-heal is the
+> backstop: a hand-scale to 2 is reverted to 1 on its own. **Production, the one
+> environment where a duplicate confirmation email reaches a real buyer, is the
+> one environment with no backstop** — §1.3 asks for both a gated production
+> sync and self-heal, Argo CD cannot give both, and `argocd/README.md` records
+> that the gate wins. So `--replicas=2` against `eventa-prod` starts a second
+> publisher that reads the same unlocked rows and double-publishes every event,
+> for as long as nobody notices; Argo CD will show the Application OutOfSync and
+> will not undo it. Scale this Deployment to `0` or to `1`, never to anything
+> else, and prefer a sync over a hand-scale for putting it back.
 
 ## Files
 

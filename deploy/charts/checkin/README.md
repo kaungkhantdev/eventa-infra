@@ -204,13 +204,23 @@ scrape path from the door's traffic — the port is the same. The place to block
 it is the WAF in front of the load balancer (§2). The same applies to
 `/api/v1/health/*`.
 
-**Two of the NetworkPolicy's ingress rules look identical, and are not a bug.**
-The ingress-controller allow and the metrics-scraper allow both resolve to "the
-`platform` namespace, port `http`", because the api serves traffic and metrics
-on one port and both the controller and the observability agents live in
-`platform` (§3.1). They are kept separate so that narrowing one later does not
-silently narrow the other; NetworkPolicy rules union, so the duplication costs
-nothing.
+**Two of the NetworkPolicy's ingress rules differ only in a placeholder, and
+both of them currently match nothing.** The ingress-controller allow and the
+metrics-scraper allow both resolve to "the `platform` namespace, port `http`",
+because the api serves traffic and metrics on one port and both the controller
+and the observability agents live in `platform` (§3.1). §3.1 names neither
+product, so the library gives each a `podSelector` of
+`app.kubernetes.io/name: REPLACE-ME-ingress-controller` and
+`REPLACE-ME-metrics-scraper` — the right shape with a deliberately wrong value,
+because a namespace-only peer would also admit Argo CD and External Secrets and
+`_library/templates/_validate.tpl` refuses that form.
+
+They **fail closed**: no pod carries either label, so until both are replaced
+this pool takes no inbound traffic at all — no door scans and no scrape. Replace
+them once a controller and an observability stack are chosen; the marker string
+is visible verbatim in the rendered object and in an Argo CD diff. Keeping them
+as two rules rather than one still matters, so that narrowing or replacing one
+does not silently change the other; NetworkPolicy rules union.
 
 ## The guards
 
@@ -247,12 +257,18 @@ they are needed.
 `eventa-dev`, `eventa-staging` and `eventa-prod` have overlays here. The other
 two from §3.1:
 
-- **`eventa-uat`** is prod-like with gated promotion (§7). It needs a
-  `values-uat.yaml` that is `values-staging.yaml`'s sizing with uat's own
-  hostname, `/eventa/uat/api` path and data-subnet CIDRs. It is not shipped
-  because a fourth near-copy of the same file is how four files start to
-  disagree; write it when uat is actually stood up and keep it to those four
-  keys.
+- **`eventa-uat` has no overlay here, and that is an open gap rather than a
+  design.** `argocd/environments/uat/checkin.yaml` already names
+  `values-uat.yaml` in its `valueFiles`, and no Argo CD Application in this repo
+  carries `helm.parameters`, so nothing substitutes for the file: that
+  Application fails with "values file does not exist" on every sync, and its own
+  header opens with `THIS APPLICATION CANNOT SYNC YET`. `argocd/README.md`
+  tracks it under "Known gaps". §7 makes UAT prod-like with gated promotion, so
+  the file is `values-staging.yaml`'s sizing with UAT's own hostname,
+  `/eventa/uat/api` secret path and data-subnet CIDRs — four keys. Settle the
+  CIDR scheme first; `argocd/README.md` says which overlays currently disagree
+  and why adding another opinion before the Terraform network module exists
+  makes that worse.
 - **`preview-<pr>`** is created per PR and torn down on close (§7,
   devops-ci-cd.md §1.1), with scale-to-zero when idle (§8). That is the one
   environment where an HPA floor of 0 is correct, and the hostname is

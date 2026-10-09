@@ -10,12 +10,32 @@
 # nothing further to approve, and these children sync themselves like dev's
 # and staging's.
 #
-# THREE OF THE FIVE CHILDREN CANNOT SYNC TODAY. `api`, `checkin` and `worker`
-# have no `values-uat.yaml`, so their Applications fail with "values file does
-# not exist" until someone writes one. That failure is deliberate and is
-# explained in ../README.md — the alternative, `ignoreMissingValueFiles`, would
-# render those three charts' production baselines into `eventa-uat`, secret
-# paths and all.
+# TWO OF THE FIVE CHILDREN CANNOT SYNC TODAY. `checkin` and `worker` have no
+# `values-uat.yaml`, so their Applications fail with "values file does not
+# exist" until someone writes one. `web`, `relay` and `api` have theirs.
+# ../README.md says what each remaining file has to contain, and why the CIDR
+# scheme has to be settled before either is written.
+#
+# Keeping the reference rather than setting `ignoreMissingValueFiles` is a
+# choice about the error message, not about safety, and the hazard this comment
+# used to claim does not exist. `ignoreMissingValueFiles` would NOT render a
+# production baseline into `eventa-uat`:
+#
+#   * Both charts refuse to render on `values.yaml` alone. `checkin` fails its
+#     values schema with "at '/image': missing property 'tag'"; `worker` fails
+#     the same schema at `/image`, whose `tag` is present but empty. (`api`,
+#     before it had an overlay, got past the schema and failed in its templates
+#     on `canary.analysis.prometheusAddress`.) So there is no baseline-only
+#     manifest for the flag to let through.
+#   * No baseline carries a secret path either. §5 makes
+#     `externalSecret.dataFrom` per-environment, so it is deliberately absent
+#     from every chart's `values.yaml`; `checkin`'s and `worker`'s baselines
+#     enable `externalSecret` with no path, which the library refuses outright.
+#
+# What the flag would actually cost is the message: it trades an error that
+# names the missing file for one that names a path in a JSON Schema. The
+# file-not-found message is the one that tells the reader what to do next, which
+# is the whole reason the reference stays.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:

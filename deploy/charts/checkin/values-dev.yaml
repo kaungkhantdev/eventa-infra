@@ -46,9 +46,16 @@ config:
     # values-prod.yaml for why these are not plausible-looking values.
     S3_BUCKET: REPLACE_WITH_UPLOADS_BUCKET
     S3_REGION: REPLACE_WITH_STORAGE_REGION
-    PUBLIC_WEB_URL: https://dev.eventa.co.th
-    PUBLIC_API_URL: https://api.dev.eventa.co.th
-    CORS_ORIGINS: https://dev.eventa.co.th
+    # The non-production domain the documents actually name: devops-ci-cd.md
+    # §1.1 puts previews on `pr-<n>.preview.eventa.dev`, and ../web,
+    # ../api and this chart now all extrapolate from that one domain. These
+    # three used to read `eventa.co.th`, which appears in eventa-docs only as
+    # test data (06-testing/test-cases.md:503) — so CORS_ORIGINS named an
+    # origin web is not served on, in the same namespace, on the same image as
+    # the api.
+    PUBLIC_WEB_URL: https://dev.eventa.dev
+    PUBLIC_API_URL: https://api.dev.eventa.dev
+    CORS_ORIGINS: https://dev.eventa.dev
 
 externalSecret:
   # §5's per-environment path, and the reason the paths are per-environment: the
@@ -60,19 +67,24 @@ externalSecret:
 
 ingress:
   hosts:
-    - host: checkin.dev.eventa.co.th
+    # Same domain as the URLs above, and as ../web/values-dev.yaml and
+    # ../api/values-dev.yaml: devops-ci-cd.md §1.1's `eventa.dev`.
+    - host: checkin.dev.eventa.dev
       paths:
         - path: /api/v1
           pathType: Prefix
 
-# PLACEHOLDERS, from the Terraform network module's output for this environment
-# (§1.1) — see values-prod.yaml.
+# The data subnets for eventa-dev: 10.<env>.<az>.0/24 with the env octet 10, and
+# AZ 1 alone because §8 runs the non-production environments on single-node data
+# services. The scheme, shared by all five charts, is in values.yaml.
+# PLACEHOLDER — the network module's output for this environment (§1.1), which
+# does not exist yet.
 global:
   eventa:
     network:
       postgresCidrs:
         - 10.10.1.0/24
       redisCidrs:
-        - 10.10.3.0/24
+        - 10.10.1.0/24
       rabbitmqCidrs:
-        - 10.10.5.0/24
+        - 10.10.1.0/24

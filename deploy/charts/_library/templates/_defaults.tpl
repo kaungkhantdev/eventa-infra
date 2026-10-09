@@ -409,6 +409,14 @@ pdb:
 # refuses to render an egress rule with an empty CIDR list, because a
 # NetworkPolicy egress rule with no `to` selector allows egress everywhere —
 # exactly the opposite of what an unset value should mean.
+#
+# Every port in a rendered rule is a NUMBER, inbound and outbound alike. A
+# container-port NAME written in any `ports` list below is resolved against
+# values.ports at render time and emitted as its containerPort. The reasoning is
+# in templates/_networkpolicy.tpl; the short version is that named-port
+# resolution in a NetworkPolicy is left to the CNI and no CNI has been chosen,
+# and that resolving the name here — where values.ports is in hand — turns a
+# typo into a render error instead of a rule that matches nothing.
 networkPolicy:
   enabled: true
   annotations: {}
@@ -419,17 +427,75 @@ networkPolicy:
     # than a Helm ownership conflict.
     enabled: false
   ingress:
+    # A peer here must select PODS, not just a namespace. §3.1 puts Argo CD,
+    # External Secrets, the ingress controller and the observability agents in
+    # one `platform` namespace, so a peer that is only `namespaceSelector:
+    # platform` admits all four — the Argo CD repo-server could then open a
+    # connection straight to api:3000, bypassing the CDN → WAF → load balancer
+    # path that §2's table calls the "only ingress path into the VPC". §3.3's
+    # rule is "No pod-to-pod that isn't declared", and a namespace is not a
+    # declaration. `_validate.tpl` refuses the namespace-only form.
+    #
+    # The two podSelectors below are therefore PLACEHOLDERS with the right
+    # shape and deliberately wrong values. The key is the standard
+    # `app.kubernetes.io/name` label that a component installed from its own
+    # chart normally carries; the value cannot be known, because §3.1 says only
+    # that these things run in `platform` and names neither the ingress
+    # controller nor the observability stack, and neither has been chosen (the
+    # same reason `ingress.className` is left unset). Replace them in the
+    # chart's values once those choices are made.
+    #
+    # An unreplaced placeholder fails CLOSED: no pod carries that label, so the
+    # allow matches nothing and inbound traffic to the workload stops. That is
+    # the safe direction for a policy, and it is visible — the marker string
+    # appears verbatim in the rendered object and in an Argo CD diff.
     fromIngressController:
       enabled: false
       namespace: platform
       namespaceSelector: {}
-      podSelector: {}
+      podSelector:
+        app.kubernetes.io/name: REPLACE-ME-ingress-controller
+      # Empty means "the container ports this chart declares, by number". See
+      # the named-port note in the `egress` section below for why by number.
       ports: []
     fromMetricsScraper:
       enabled: true
       namespace: platform
       namespaceSelector: {}
-      podSelector: {}
+      podSelector:
+        app.kubernetes.io/name: REPLACE-ME-metrics-scraper
+    # Kubelet probe traffic. Off by default.
+    #
+    # Every rendered policy declares `policyTypes: [Ingress, Egress]` and allows
+    # ingress only from `platform`, so a readiness or liveness probe matches no
+    # rule: the kubelet sends it from the NODE's own address, and a node is not
+    # a pod. The NetworkPolicy API has no peer that means "the kubelet" — a node
+    # has no namespace and no pod labels — so the only way to name it is its
+    # address range, which is why this is a CIDR peer and not a pod peer.
+    #
+    # Whether probes are actually blocked is a property of the CNI rather than
+    # of the API: some implementations do not apply pod policy to traffic
+    # sourced from the node at all, which is why a default-deny namespace often
+    # does not break probes in practice. No CNI has been chosen for this cluster
+    # — nothing in devops-infrastructure.md names a network plugin, and §3 says
+    # only "managed Kubernetes" — so this is recorded as a caveat, the same way
+    # FQDN egress is below. Do not assume probes work; do not assume they break.
+    #
+    # Off by default because enabling it widens ingress, and because the range
+    # would have to be the private app subnets of §2 — a per-environment value
+    # from the Terraform network module, exactly like the data-store CIDRs
+    # below. `_validate.tpl` refuses `enabled: true` with no CIDR, because a
+    # NetworkPolicy ingress rule with an empty `from` admits every source rather
+    # than none. Turn it on if probes are observed failing under the
+    # default-deny, not pre-emptively.
+    fromNodes:
+      enabled: false
+      # Falls back to global.eventa.network.nodeCidrs when empty.
+      cidrs: []
+      # Empty means "the container ports this chart declares, by number", which
+      # is where an HTTP probe lands. A probe aimed at a port that is not in
+      # values.ports needs an explicit entry here.
+      ports: []
     # Declared pod-to-pod ingress: [{namespace, namespaceSelector, podSelector,
     # ports: [{port, protocol}]}]
     fromPods: []
@@ -487,13 +553,18 @@ networkPolicy:
 
 # Shared values an umbrella chart can set once instead of repeating them in five
 # service charts. Each `networkPolicy.egress.<store>.cidrs` falls back to the
-# matching list here when it is empty.
+# matching list here when it is empty, and
+# `networkPolicy.ingress.fromNodes.cidrs` falls back to `nodeCidrs`.
 global:
   eventa:
     network:
       postgresCidrs: []
       redisCidrs: []
       rabbitmqCidrs: []
+      # The private app subnets of §2 — the addresses the kubelet probes from.
+      # Only read when networkPolicy.ingress.fromNodes is enabled, which it is
+      # not by default.
+      nodeCidrs: []
 
 # ---------------------------------------------------------------------------
 # Ingress

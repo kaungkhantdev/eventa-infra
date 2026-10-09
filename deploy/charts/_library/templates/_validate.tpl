@@ -215,8 +215,93 @@ expensive, or both.
 {{- end -}}
 {{- end -}}
 {{- end -}}
-{{- if and $v.networkPolicy.ingress.fromIngressController.enabled (not $v.networkPolicy.ingress.fromIngressController.podSelector) (not $v.networkPolicy.ingress.fromIngressController.namespaceSelector) (not $v.networkPolicy.ingress.fromIngressController.namespace) -}}
-{{- fail (printf "[%s] networkPolicy.ingress.fromIngressController is enabled with no namespace, namespaceSelector or podSelector, which would admit traffic from every pod in the cluster. The ingress controller runs in the `platform` namespace (devops-infrastructure.md §3.1)." $chart) -}}
+{{- /*
+  The library's own peers must select PODS, not just a namespace.
+
+  A peer with no selector at all admits every pod in the cluster, which is what
+  the fromIngressController check used to catch. But the form it was meant to
+  prevent also arrives one step narrower, and that form used to pass: a peer
+  with a `namespace` and an empty `podSelector` renders as a bare
+  namespaceSelector, and §3.1 puts Argo CD, External Secrets, the ingress
+  controller AND the observability agents in the single `platform` namespace. So
+  the narrower form still let the Argo CD repo-server, or any vendor agent
+  installed alongside it, open a direct connection to this workload — past the
+  CDN → WAF → load balancer path that §2's table calls the "only ingress path
+  into the VPC", and against §3.3's "No pod-to-pod that isn't declared", since a
+  namespace is not a declaration.
+
+  Both forms are refused here. `_defaults.tpl` ships a placeholder podSelector
+  for each of these peers so the shape is right out of the box; it is accepted
+  because it fails closed (no pod carries that label) and shows up verbatim in
+  the rendered object, whereas failing the render would make the library
+  unusable before an ingress controller and an observability stack have been
+  chosen — and §3.1 names neither.
+
+  Scope: the two peers the library itself supplies a default for. `fromPods` is
+  checked above instead, because there the chart author writes the peer out,
+  which is what §3.3 means by declaring it. `egress.dns` already ships
+  `k8s-app: kube-dns` for the same reason this check exists, but it is left
+  unchecked rather than guessed at — it is an egress peer to a namespace this
+  platform does not own, and tightening it is not this finding.
+
+  What this check actually guards, stated plainly rather than overclaimed: a
+  chart's values cannot reach the namespace-only form today. `podSelector: {}`
+  in a values file does not clear the default, because `eventa-library.values`
+  merges with `mergeOverwrite`, which leaves a non-empty destination alone when
+  the source value is empty; and `podSelector: null` is rejected first by the
+  chart's own values.schema.json, where the field is typed `object`. So the form
+  this refuses is the one that arrives by editing the DEFAULT in
+  `_defaults.tpl` back to `{}` — which is exactly how it got shipped the first
+  time. The check turns that edit into a failed render instead of five quietly
+  widened policies.
+*/ -}}
+{{- range $name := list "fromIngressController" "fromMetricsScraper" -}}
+{{- $peer := index $v.networkPolicy.ingress $name -}}
+{{- if $peer.enabled -}}
+{{- if and (not $peer.podSelector) (not $peer.namespaceSelector) (not $peer.namespace) -}}
+{{- fail (printf "[%s] networkPolicy.ingress.%s is enabled with no namespace, namespaceSelector or podSelector, which would admit traffic from every pod in the cluster. devops-infrastructure.md §3.1 places the ingress controller, Argo CD, External Secrets and the observability agents in the `platform` namespace." $chart $name) -}}
+{{- end -}}
+{{- if and (not $peer.podSelector) (not $peer.namespaceSelector) -}}
+{{- fail (printf "[%s] networkPolicy.ingress.%s selects the namespace %q and no pods, so it admits every pod in it. §3.1 puts Argo CD, External Secrets, the ingress controller and the observability agents in one namespace, so that peer admits all four — the opposite of §3.3's \"No pod-to-pod that isn't declared\", and a way around the CDN → WAF → load balancer path §2 calls the only ingress path into the VPC. Set networkPolicy.ingress.%s.podSelector to the labels of the pods actually allowed to connect, or networkPolicy.ingress.%s.namespaceSelector if the peer genuinely is every pod in some namespace." $chart $name $peer.namespace $name $name) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- /*
+  Node CIDRs for kubelet probe traffic, the same trap as the data stores: an
+  ingress rule with an empty `from` admits every source rather than none, so an
+  unset CIDR has to be an error.
+*/ -}}
+{{- if $v.networkPolicy.ingress.fromNodes.enabled -}}
+{{- if not ($v.networkPolicy.ingress.fromNodes.cidrs | default (dig "eventa" "network" "nodeCidrs" list $v.global)) -}}
+{{- fail (printf "[%s] networkPolicy.ingress.fromNodes.enabled is true but no CIDR is set. The kubelet probes from the node's own address, so the peer can only be an ipBlock — the private app subnets of devops-infrastructure.md §2, per environment, from the Terraform network module. Rendering the rule with an empty `from` would admit EVERY source, which is the opposite of §3.3's default-deny. Set networkPolicy.ingress.fromNodes.cidrs, or global.eventa.network.nodeCidrs for all five charts at once." $chart) -}}
+{{- end -}}
+{{- end -}}
+{{- /*
+  Egress ports must be numbers.
+
+  Inbound rules may name a container port, because the library resolves the name
+  against values.ports before rendering (see `_networkpolicy.tpl`). Outbound
+  rules cannot: the destination is an ipBlock, or pods belonging to a different
+  workload whose port names this chart does not know. The API would leave such a
+  name to the CNI to resolve per destination pod, and no CNI has been chosen —
+  the same gap recorded for FQDN egress. A name here would therefore render a
+  rule that matches nothing, so it is refused rather than emitted.
+*/ -}}
+{{- $egressPortLists := dict
+    "egress.dns.ports" $v.networkPolicy.egress.dns.ports
+    "egress.postgres.ports" $v.networkPolicy.egress.postgres.ports
+    "egress.redis.ports" $v.networkPolicy.egress.redis.ports
+    "egress.rabbitmq.ports" $v.networkPolicy.egress.rabbitmq.ports
+    "egress.external.ports" $v.networkPolicy.egress.external.ports -}}
+{{- range $i, $peer := ($v.networkPolicy.egress.toPods | default list) -}}
+{{- $egressPortLists = set $egressPortLists (printf "egress.toPods[%d].ports" $i) $peer.ports -}}
+{{- end -}}
+{{- range $path, $ports := $egressPortLists -}}
+{{- range $p := ($ports | default list) -}}
+{{- if and (not (kindIs "invalid" $p)) (kindIs "string" $p.port) (not (regexMatch "^[0-9]+$" $p.port)) -}}
+{{- fail (printf "[%s] networkPolicy.%s uses the port name %q. An egress rule's destination is an ipBlock or another workload's pods, so this chart cannot resolve the name and the CNI would have to resolve it per destination pod — and no CNI has been chosen (devops-infrastructure.md names no network plugin), which is the same reason FQDN egress is not used. Write the number. Inbound rules may use a name because the library resolves it against values.ports." $chart $path $p.port) -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 

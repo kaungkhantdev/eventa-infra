@@ -50,9 +50,13 @@ config:
     # for why these are not plausible-looking values.
     S3_BUCKET: REPLACE_WITH_UPLOADS_BUCKET
     S3_REGION: REPLACE_WITH_STORAGE_REGION
-    PUBLIC_WEB_URL: https://staging.eventa.co.th
-    PUBLIC_API_URL: https://api.staging.eventa.co.th
-    CORS_ORIGINS: https://staging.eventa.co.th
+    # `eventa.dev`, the non-production domain devops-ci-cd.md §1.1 names for
+    # previews and the one ../web/values-staging.yaml and
+    # ../api/values-staging.yaml serve on. See values-dev.yaml for why these
+    # three moved off `eventa.co.th`.
+    PUBLIC_WEB_URL: https://staging.eventa.dev
+    PUBLIC_API_URL: https://api.staging.eventa.dev
+    CORS_ORIGINS: https://staging.eventa.dev
 
 externalSecret:
   # §5's per-environment path. The IAM grant behind it is scoped to this
@@ -63,20 +67,27 @@ externalSecret:
 
 ingress:
   hosts:
-    - host: checkin.staging.eventa.co.th
+    - host: checkin.staging.eventa.dev
       paths:
         - path: /api/v1
           pathType: Prefix
 
-# PLACEHOLDERS, from the Terraform network module's output for this environment
-# (§1.1) — see values-prod.yaml. Staging's data subnets are separate ranges
-# because §7's parity is "same modules, different tfvars", not a shared network.
+# The data subnets for eventa-staging: 10.<env>.<az>.0/24 with the env octet 20,
+# and AZ 1 alone because §8 runs the non-production environments on single-node
+# data services. The scheme, shared by all five charts, is in values.yaml, and
+# staging's ranges stay disjoint from production's because §7's parity is "same
+# modules, different tfvars", not a shared network.
+#
+# This file previously carried 10.30.x, which is the octet the scheme assigns to
+# UAT — and production here carried 10.20.x, staging's — so this chart had the
+# two environments swapped against the other four. PLACEHOLDER — the network
+# module's output for this environment (§1.1), which does not exist yet.
 global:
   eventa:
     network:
       postgresCidrs:
-        - 10.30.1.0/24
+        - 10.20.1.0/24
       redisCidrs:
-        - 10.30.3.0/24
+        - 10.20.1.0/24
       rabbitmqCidrs:
-        - 10.30.5.0/24
+        - 10.20.1.0/24

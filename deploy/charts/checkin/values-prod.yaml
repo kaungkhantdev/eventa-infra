@@ -35,15 +35,32 @@ config:
     S3_REGION: REPLACE_WITH_STORAGE_REGION
     # Both are shown to people and signed into links, so they have to be the
     # addresses that resolve from outside the cluster, not Service names. The
-    # zone is the one Terraform's `global/` state owns (§1.1); `eventa.co.th` is
-    # the product's domain, the subdomains are this chart's assumption.
-    PUBLIC_WEB_URL: https://eventa.co.th
-    PUBLIC_API_URL: https://api.eventa.co.th
+    # zone is the one Terraform's `global/` state owns (§1.1), which has not
+    # been written.
+    #
+    # THE PRODUCTION DOMAIN IS UNDECIDED. This file used to call `eventa.co.th`
+    # "the product's domain". It is not a deployment decision: it appears in
+    # eventa-docs only as fixture data (06-testing/test-cases.md:503), and no
+    # document in 07-deployment names a production hostname at all. ../api
+    # meanwhile asserted `eventa.dev` — devops-ci-cd.md §1.1's preview domain —
+    # and ../web asserted `www.eventa.invalid`. One product, three
+    # plausible-looking production domains, across four charts that deploy into
+    # one namespace.
+    #
+    # All five charts now use the single placeholder zone `eventa.invalid`:
+    # reserved by RFC 2606 and resolving nowhere, so a forgotten value fails
+    # closed and visibly rather than answering on a name nobody chose.
+    # ../web/values-prod.yaml carries the reasoning in full. When the real
+    # domain is decided, change it in all five charts in one commit.
+    PUBLIC_WEB_URL: https://www.eventa.invalid
+    PUBLIC_API_URL: https://api.eventa.invalid
     # The door app is served from the public web origin, so that is the only
-    # origin this pool needs to answer with credentials. The api's own `*`
-    # default would make every site on the internet a valid caller of a
-    # session-bearing endpoint.
-    CORS_ORIGINS: https://eventa.co.th
+    # origin this pool needs to answer with credentials — and it has to be
+    # ../web/values-prod.yaml's Ingress host exactly, since a mismatch shows up
+    # only as the browser's calls failing CORS. The api's own `*` default would
+    # make every site on the internet a valid caller of a session-bearing
+    # endpoint.
+    CORS_ORIGINS: https://www.eventa.invalid
 
 externalSecret:
   # §5: per-environment store paths with least-privilege IAM per namespace, so a
@@ -67,18 +84,28 @@ ingress:
   # Ingress that is never picked up by anything. An unset class uses the
   # cluster's default IngressClass; set it here once the controller is chosen.
   hosts:
-    - host: checkin.eventa.co.th
+    # PLACEHOLDER, in the one undecided-domain zone all five charts use — see
+    # config.env above.
+    - host: checkin.eventa.invalid
       paths:
         - path: /api/v1
           pathType: Prefix
 
-# The data subnets the managed Postgres, Redis and RabbitMQ sit in (§2, §4).
+# The data subnets the managed Postgres, Redis and RabbitMQ sit in (§2, §4):
+# 10.<env>.<az>.0/24 with the env octet 40, and all three availability zones.
+# The scheme, shared by all five charts, is in values.yaml. Production lists
+# every zone because §4 gives Postgres automatic failover to a multi-AZ standby
+# and RabbitMQ a three-node cluster, so the endpoint moves between zones and a
+# one-zone allow works until the first failover.
+#
 # PLACEHOLDERS: these are the shape, not the addresses. They come from the
 # Terraform network module's output for this environment (§1.1), which does not
 # exist yet — no cloud provider has been chosen. Replace them with that output
 # in the same change that creates it. A wrong CIDR here is not a render error:
 # it is a connection timeout on every readiness probe, so the pool simply never
-# becomes ready.
+# becomes ready. This file previously carried 10.20.x, which the scheme assigns
+# to staging, while values-staging.yaml carried 10.30.x — the two environments
+# were swapped in this chart and in no other.
 #
 # Set under `global` rather than per-store so that one value serves all five
 # charts in this environment, which is also where an umbrella chart or the
@@ -87,11 +114,17 @@ global:
   eventa:
     network:
       postgresCidrs:
-        - 10.20.1.0/24
+        - 10.40.1.0/24
+        - 10.40.2.0/24
+        - 10.40.3.0/24
       redisCidrs:
-        - 10.20.3.0/24
+        - 10.40.1.0/24
+        - 10.40.2.0/24
+        - 10.40.3.0/24
       rabbitmqCidrs:
-        - 10.20.5.0/24
+        - 10.40.1.0/24
+        - 10.40.2.0/24
+        - 10.40.3.0/24
 
 # serviceAccount:
 #   annotations:

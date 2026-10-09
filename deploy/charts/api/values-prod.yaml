@@ -34,26 +34,52 @@ image:
 
 config:
   env:
-    # PLACEHOLDER (hostnames). Derived from the domain devops-ci-cd.md §1.1
-    # uses for previews, `eventa.dev`. PUBLIC_API_URL has to be the address
-    # Stripe can actually reach, because organizers paste it into their own
-    # Stripe dashboard to register a webhook endpoint — eventa-api's env schema
-    # says why it cannot be derived from an incoming request.
-    PUBLIC_WEB_URL: https://eventa.dev
-    PUBLIC_API_URL: https://api.eventa.dev
-    # The browser origins allowed to call the api. Production is the one
-    # environment where this is not `*`: the api serves credentialed requests
-    # (eventa-api/src/main.ts enables CORS with credentials), and a wildcard
-    # origin with credentials is how one tenant's page reads another's session.
-    CORS_ORIGINS: https://eventa.dev
+    # PLACEHOLDER (hostnames). THE PRODUCTION DOMAIN IS UNDECIDED.
+    #
+    # No document in eventa-docs names it. This file used to assert
+    # `eventa.dev`, which devops-ci-cd.md §1.1 uses only for PR previews
+    # (`pr-<n>.preview.eventa.dev`), while ../checkin and ../worker asserted
+    # `eventa.co.th` — a domain that appears in eventa-docs only as test data
+    # (06-testing/test-cases.md:503) — and ../web asserted
+    # `www.eventa.invalid`. Three plausible-looking domains for one product, and
+    # the CORS_ORIGINS below did not contain the host web is actually served on,
+    # so every browser call from the SSR origin would have been rejected.
+    #
+    # All five charts now use the one placeholder zone `eventa.invalid`:
+    # reserved by RFC 2606, resolving nowhere, so a forgotten value fails closed
+    # and visibly instead of answering on a name nobody chose. ../web/values-prod.yaml
+    # carries the reasoning in full. When the real domain is decided, change it
+    # in all five charts in one commit.
+    #
+    # PUBLIC_API_URL has to be the address Stripe can actually reach, because
+    # organizers paste it into their own Stripe dashboard to register a webhook
+    # endpoint — eventa-api's env schema says why it cannot be derived from an
+    # incoming request. Which is one more reason it cannot be guessed here.
+    PUBLIC_WEB_URL: https://www.eventa.invalid
+    PUBLIC_API_URL: https://api.eventa.invalid
+    # The browser origins allowed to call the api, and it must be the origin web
+    # is served from — ../web/values-prod.yaml's Ingress host, exactly. A
+    # mismatch here is not a 403 anybody debugs quickly: the SSR render succeeds
+    # server-side and the browser's follow-up calls fail on CORS.
+    #
+    # Production is also the one environment where this is not `*`: the api
+    # serves credentialed requests (eventa-api/src/main.ts enables CORS with
+    # credentials), and a wildcard origin with credentials is how one tenant's
+    # page reads another's session.
+    CORS_ORIGINS: https://www.eventa.invalid
 
     # PLACEHOLDER (object storage). Both are required with no default in
     # eventa-api/src/config/env.validation.ts — an upload has nowhere to go
     # without them — and both are outputs of the object-storage module (§1.1).
-    # The region string's syntax is provider-specific, which is exactly why this
-    # chart does not spell one: §1.1 names the mechanism and not the vendor.
-    S3_BUCKET: eventa-prod-uploads
-    S3_REGION: REPLACE_WITH_TERRAFORM_OBJECT_STORAGE_REGION
+    #
+    # Loud REPLACE_ tokens for both, which is the convention
+    # ../checkin/values-prod.yaml argues for and this chart now shares: api and
+    # checkin are the same image in the same namespace reading the same bucket
+    # (§3.2), and `eventa-prod-uploads` read like a name somebody had chosen
+    # while the region beside it was openly unset. A token that fails loudly if
+    # it is ever reached beats a guess that looks authoritative.
+    S3_BUCKET: REPLACE_WITH_UPLOADS_BUCKET
+    S3_REGION: REPLACE_WITH_STORAGE_REGION
 
 # devops-infrastructure.md §5: per-environment paths with least-privilege IAM
 # per namespace, so a dev pod cannot read prod secrets. This path is the whole
@@ -82,7 +108,10 @@ ingress:
   # be a guess that fails closed — an Ingress with an unknown class is ignored
   # by every controller.
   hosts:
-    - host: api.eventa.dev
+    # PLACEHOLDER, in the one undecided-domain zone all five charts use — see
+    # config.env above. `.invalid` resolves nowhere (RFC 2606), so a forgotten
+    # value leaves the api unreachable and obviously so.
+    - host: api.eventa.invalid
       paths:
         - path: /
           pathType: Prefix
@@ -92,29 +121,45 @@ ingress:
 
 networkPolicy:
   egress:
-    # PLACEHOLDER (data subnets). §2 puts Postgres, Redis and RabbitMQ in
-    # private data subnets as managed services — not pods — so the allow is an
-    # ipBlock, and the ranges are the `data subnet` outputs of the network
-    # module for this environment (§1.1). One /24 per AZ is the shape the module
-    # produces; replace the list wholesale.
+    # §3.3's api → Postgres/Redis/RabbitMQ. §2 puts all three in private data
+    # subnets as managed services — not pods — so each allow is an ipBlock. The
+    # toggles sit in the overlay beside the list because a store enabled with no
+    # CIDR is a render error. See values-dev.yaml for what
+    # templates/_validate.tpl requires of an environment render.
     postgres:
       enabled: true
-      cidrs:
-        - 10.30.1.0/24
-        - 10.30.2.0/24
-        - 10.30.3.0/24
     redis:
       enabled: true
-      cidrs:
-        - 10.30.1.0/24
-        - 10.30.2.0/24
-        - 10.30.3.0/24
     rabbitmq:
       enabled: true
-      cidrs:
-        - 10.30.1.0/24
-        - 10.30.2.0/24
-        - 10.30.3.0/24
+
+# The data subnets for eventa-prod: 10.<env>.<az>.0/24 with the env octet 40,
+# and all three availability zones. The scheme, shared by all five charts, is in
+# values.yaml; production lists every zone because §4 gives Postgres automatic
+# failover to a multi-AZ standby and RabbitMQ a three-node cluster, so the
+# endpoint moves between zones and a one-zone allow works until the first
+# failover — at which point the NetworkPolicy is the last place anyone looks.
+#
+# PLACEHOLDER. These are the `data subnet` outputs of the network module for
+# this environment (§1.1), which has not been written; replace the lists
+# wholesale in the change that creates it. Production used to carry 10.30.x
+# here, which ../relay/values-uat.yaml also claimed — so one range named two
+# environments' databases.
+global:
+  eventa:
+    network:
+      postgresCidrs:
+        - 10.40.1.0/24
+        - 10.40.2.0/24
+        - 10.40.3.0/24
+      redisCidrs:
+        - 10.40.1.0/24
+        - 10.40.2.0/24
+        - 10.40.3.0/24
+      rabbitmqCidrs:
+        - 10.40.1.0/24
+        - 10.40.2.0/24
+        - 10.40.3.0/24
 
 canary:
   analysis:

@@ -14,8 +14,43 @@ Helm charts and Argo CD for running [Eventa](../eventa-docs).
 > `values-<env>.yaml`. Each one says which module owns it. Nothing deploys until
 > they are real.
 >
-> Also missing, and tracked in [argocd/README.md](argocd/README.md): PR preview
-> environments, and `values-uat.yaml` for three of the five charts.
+> Two placeholders are **not** Terraform outputs and are easy to miss for that
+> reason: the `podSelector` values that the NetworkPolicy ingress allows use to
+> identify the ingress controller and the metrics scraper. §3.1 says only that
+> both run in `platform` and names neither product, so the library ships
+> `app.kubernetes.io/name: REPLACE-ME-ingress-controller` and
+> `REPLACE-ME-metrics-scraper` — the right shape with a deliberately wrong
+> value. They fail **closed**: no pod carries that label, so until they are
+> replaced the allow matches nothing and inbound traffic to the workload stops.
+> The marker appears verbatim in the rendered object and in an Argo CD diff.
+>
+> **Known gaps.** Two are open, and one was a live defect that is now fixed —
+> recorded because it is the failure mode this repo is most likely to recreate:
+>
+> 1. **`values-uat.yaml` is missing for `checkin` and `worker`**, so two of
+>    UAT's five Argo CD Applications cannot sync at all. The
+>    `argocd/environments/uat/*.yaml` Applications already reference the file,
+>    and nothing overrides it — no Application in this repo carries
+>    `helm.parameters`. [argocd/README.md](argocd/README.md) lists what each
+>    file has to contain, and why the CIDR scheme has to be settled first:
+>    `api`, `checkin`, `worker` and `relay` currently name three different
+>    ranges for the same production Postgres, so the UAT files must not add a
+>    fourth.
+> 2. **PR preview environments are not implemented.** §3.1's `preview-<pr>`
+>    namespace and ci-cd §1.1's `ApplicationSet` are absent on purpose; the
+>    three blockers are written out in
+>    [argocd/projects/eventa-preview.yaml](argocd/projects/eventa-preview.yaml).
+> 3. **Fixed: the NetworkPolicies used to break the `web` → `api` path.** A
+>    default-deny namespace needs the source's egress *and* the destination's
+>    ingress, and no chart in this repo set
+>    `networkPolicy.ingress.fromPods` at all — so `web` could send and the api
+>    would not receive, in every environment, while the Ingress, Service,
+>    Rollout and pods all reported healthy. `api/values.yaml` now carries the
+>    ingress half, selecting `app.kubernetes.io/name: web` and
+>    `component: web` on 3000, in the baseline so every overlay inherits it.
+>    **An in-cluster caller added later needs the same pair of allows**, and
+>    §3.3's "no pod-to-pod that isn't declared" is the rule that makes a
+>    forgotten declaration silent rather than refused.
 >
 > Local development still runs the whole platform from `docker compose` in
 > `eventa-api` — see [below](#local-development).
@@ -33,8 +68,11 @@ of truth:
 | [software-architecture.md §8](../eventa-docs/04-architecture/software-architecture.md) | The deployment view the above implement |
 | [devops-observability-sre.md](../eventa-docs/08-maintenance/devops-observability-sre.md) | The signals every service must emit |
 
-One entry in those documents is a defect and the charts deliberately contradict
-it. See **warning 4**.
+There are **six** places where these charts do not do what one of those
+documents says — four because the document is wrong, two because it asks for
+something the service cannot yet do. All six are listed under **warning 4**,
+with the five upstream corrections they need. Nothing else in these charts
+departs from the documents.
 
 ## Layout
 
@@ -100,10 +138,26 @@ helm template relay deploy/charts/relay -n eventa-prod \
 # SINGLETON GUARD — refusing to render the `relay` chart.
 ```
 
-The same guard trips on `hpa.enabled=true` and on `singleton.enabled=false`.
-There is also no Argo CD route to it: no Application in `argocd/` carries a
-`helm.parameters` block, so the replica count cannot be overridden from outside
-the values files the chart validates.
+The same guard trips on `hpa.enabled=true`, on
+`updateStrategy.rollingUpdate.maxSurge=1` (a surge *is* a second replica) and on
+`singleton.enabled=false`. All four are verified failing. There is also no Argo
+CD route to it: no Application in `argocd/` carries a `helm.parameters` block, so
+the replica count cannot be overridden from outside the values files the chart
+validates.
+
+**The guard stops at the cluster boundary, and production has no net past it.**
+Every one of those four refusals happens at *render* time, and `kubectl scale`
+never renders the chart. In `eventa-dev`, `eventa-staging` and `eventa-uat`
+Argo CD self-heal is the backstop — a hand-scaled relay goes back to the chart's
+literal `1` on its own. **`eventa-prod` has no `automated` block at all**, so
+nothing reverts anything there: §1.3 asks for both a gated production sync and
+self-heal, Argo CD cannot give both, and
+[argocd/README.md](argocd/README.md) records that the gate wins. A
+`kubectl scale deployment/relay -n eventa-prod --replicas=2` therefore starts a
+second publisher and duplicates every event for as long as nobody reads the
+OutOfSync status. Scale it to `0` or `1`, never above;
+[deploy/charts/relay/README.md](deploy/charts/relay/README.md) has the
+maintenance-window procedure.
 
 **2. A liveness probe will not catch the failure that matters.** If the relay is
 running but not publishing, every probe is green and no email leaves the platform
@@ -152,8 +206,11 @@ concurrently are both handled — one registration, two confirmation emails.
 
 So the charts pin one replica, ship no HPA for the relay, and fail to render if
 anyone raises the count (warning 1 shows the error). **The chart is right and the
-document is wrong**, which is the opposite of the rule at the top of this file,
-and it is the only place that is true.
+document is wrong**, which is the opposite of the rule at the top of this file.
+
+It is not, however, the only place the charts and the documents disagree. The
+full list is below, because "the charts implement the spec except here" was the
+claim this file used to make and it was not true.
 
 **Before the guard can be lifted, in this order:**
 
@@ -168,12 +225,57 @@ and it is the only place that is true.
 
 Step 3 without step 1 is the double-publish.
 
-**`eventa-docs` needs a correction and this repo cannot make it.** `eventa-docs`
-is read-only from here, so §3.2's relay row and §6's "relay scales with outbox
-lag" are still uncorrected upstream. Someone with write access should amend both
-to say *exactly 1 until the reader takes a row lock*, and reference the two
-source lines above — otherwise the next reader of the specification will believe
-the table and reopen this.
+### Every place the charts do not do what a document says
+
+Six, verified by rendering each chart rather than by reading its comments. Four
+of them (1, 2, 5, 6) are cases of the document being **wrong** — a figure that
+contradicts the code, or a grouping that puts the relay with services whose
+needs it does not share. Two (3, 4) are cases of a document asking for something
+`eventa-relay` **cannot yet do**; those close when the service gains the
+feature, not when the document is edited. None of them is a free choice, and
+each is argued in the chart that makes it.
+
+| # | Deviation | What the document says | Why the chart differs |
+| --- | --- | --- | --- |
+| 1 | **relay runs exactly 1 replica** | `devops-infrastructure.md` §3.2: minimum 2 | The reader takes no row lock. The two source lines above. **The document is wrong.** |
+| 2 | **relay ships no HPA at all** | §3.2 gives it the signal "CPU + outbox lag"; §6 lists "queue depth (worker/relay)" and "`relay` scales with outbox lag"; **`devops-ci-cd.md` §0** tabulates it as "1 Deployment + HPA (singleton-safe)" | Same defect as 1, in four more entries (§3.2's signal column, §6's Pods row, §6's Consumers row, ci-cd §0's relay row). Until the reader claims rows an autoscaler's only job is to create the replica that must not exist. Outbox lag still *is* the signal — it wakes a human (observability §2). **The documents are wrong.** |
+| 3 | **relay serves no `/metrics`** | `devops-observability-sre.md` §1: "all 5 workloads via `/metrics`" | `eventa-relay/src/main.ts:24` creates an application *context* — no `listen`, no controller, no port, so there is nothing to scrape. §2 anticipates this and sources outbox lag from a "relay gauge / **DB query exporter**", which is the better signal anyway because it still reports when the relay is gone. |
+| 4 | **relay ships no probes** | §3.3: "Workers/relay use exec/TCP checks … plus broker-connection health"; `devops-ci-cd.md` §4.3: "every workload defines `startup`, `readiness`, `liveness`" | That is the right probe and `eventa-relay` does not have it: no health module, no CLI entrypoint, no second binary. TCP has nothing to connect to. With `maxSurge: 0`, an `exec` probe pointed at an absent command would leave **zero** publishers on every deploy. |
+| 5 | **relay has no Redis egress** | §3.3 groups "api/checkin/worker/relay → Postgres/Redis/RabbitMQ" | `eventa-relay`'s env schema has no `REDIS_URL` and the service holds no cache, session or idempotency state (`src/config/env.validation.ts:11-27`). §3.3's own rule is that nothing undeclared is permitted. |
+| 6 | **worker uses HTTP probes, not exec/TCP** | the same §3.3 sentence's "(no HTTP server)" | Out of date for the worker: `eventa-worker/src/main.ts:18` calls `app.listen(port)` and `src/health/health.controller.ts:27,36` serves `/health/live` and `/health/ready`, with liveness reporting "attached to the queue" — which is the broker-connection health the same sentence asks for. **The parenthetical is wrong.** |
+
+Two further places where the *documents disagree with each other* and the charts
+follow the more specific one, which is a reading rather than a deviation:
+
+- **`web` has no startup probe.** §3.3 puts a startup probe "on api/worker";
+  ci-cd §4.3 says every workload defines one. The charts follow §3.3, and web is
+  a Node SSR server with no cold NestJS boot to cover.
+- **UAT auto-syncs although §7 calls it "gated".** ci-cd §4.1 gates UAT on an
+  approval of the *promotion*; §1.3 and §4.1 reserve a gated *sync* for
+  production. [argocd/README.md](argocd/README.md) works this through.
+
+### `eventa-docs` needs five corrections and this repo cannot make them
+
+`eventa-docs` is read-only from here, so every entry below is still uncorrected
+upstream. Someone with write access should amend all five — correcting only
+§3.2 and §6 would leave `devops-ci-cd.md` §0 still specifying an HPA for the
+relay, which is the entry a reader is most likely to hit first, since §0 is the
+inventory table at the top of that document.
+
+| Document and entry | Should say |
+| --- | --- |
+| `devops-infrastructure.md` §3.2, relay row | **exactly 1** replica, scaling signal **none**, until `eventa-relay`'s reader takes a row lock. Reference `outbox-reader.repository.ts:25` and `main.ts:20`. |
+| `devops-infrastructure.md` §6, the Pods and Consumers rows | Drop `relay` from "queue depth (worker/relay)" and strike "`relay` scales with outbox lag". Outbox lag stays an **alerting** signal, not a scaling one. |
+| **`devops-ci-cd.md` §0**, relay row | "1 Deployment, **no HPA**" — not "1 Deployment + HPA (singleton-safe)". A singleton-safe HPA is not a thing that exists here. |
+| `devops-observability-sre.md` §1, Metrics row | "all 5 workloads via `/metrics`" → four; the relay is measured by the DB query exporter §2 already names. |
+| `devops-infrastructure.md` §3.3, NetworkPolicy allows and probes bullet | Drop `relay` from the Redis grouping, and drop "(no HTTP server)" from the workers half of the probes sentence. |
+
+Until those land, the next reader of the specification will believe the tables
+and reopen all of this. The two charts that deviate carry their own entries in a
+`eventa.io/spec-deviations` annotation — `deploy/charts/relay/Chart.yaml` has
+items 1–5 plus this correction list, and `deploy/charts/worker/Chart.yaml` has
+item 6 — so a deviation travels with the chart that makes it and not only with
+this file.
 
 ## Working on the charts locally
 
@@ -199,17 +301,33 @@ for c in web api checkin worker relay; do
 done
 ```
 
-Three charts have no `values-uat.yaml` yet, so expect three `SKIP` lines — those
-are the gap [argocd/README.md](argocd/README.md) tracks.
+`checkin` and `worker` have no `values-uat.yaml` yet, so expect two `SKIP`
+lines — that is the gap [argocd/README.md](argocd/README.md) tracks. Everything
+else should print `OK`; 18 of the 20 service/environment pairs render today.
 
-**A chart will not render without an environment overlay, and that is
-deliberate.** The baseline `values.yaml` of each chart is the production sizing
-from §3.3 with nothing environment-specific in it; the overlay supplies the
-image tag, the secret path, the hostnames and the data-subnet CIDRs. Rendering
-without one fails on whichever of those is missing first, rather than quietly
-deploying a chart that has no secrets and an unpullable image. Use the release
-name shown above — the **service** name, not a per-environment one, because
-`web` reaches the api at `http://api/api/v1`.
+**No chart renders without an environment overlay, and that is deliberate.** The
+baseline `values.yaml` of each chart is the production sizing from §3.3 with
+nothing environment-specific in it; the overlay supplies the image tag, the
+secret path, the hostnames and the data-subnet CIDRs. Rendering without one
+fails, rather than quietly deploying a chart that has no secrets and an
+unpullable image.
+
+They do not all fail on the same thing, and the difference matters when you are
+reading an error:
+
+| Chart | `helm template <chart> deploy/charts/<chart>` fails on |
+| --- | --- |
+| `web`, `checkin`, `worker`, `relay` | the values schema, at `/image`: no usable `tag` and no `digest`. (`web`, `checkin` and `relay` have no `tag` key at all; `worker`'s is present and empty, so its message is a `minLength` failure rather than a missing property.) |
+| `api` | its **templates** — `canary.analysis` has a Prometheus gate with no `prometheusAddress` |
+
+The api's baseline does not reach the image check, because `canary.analysis` is
+validated first; the overlay is where the Prometheus address lives
+(observability §1 puts the metric sink in `platform`, per environment). So a
+missing overlay is always caught, but "the image tag is missing" is not a
+reliable thing to expect in the message.
+
+Use the release name shown above — the **service** name, not a per-environment
+one, because `web` reaches the api at `http://api/api/v1`.
 
 **`kubectl apply --dry-run=client` does not work here.** It resolves every `kind`
 through API discovery against a live API server, so with no cluster it fails on

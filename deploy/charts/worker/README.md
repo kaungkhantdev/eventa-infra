@@ -76,13 +76,28 @@ read as oversights:
 | `values-staging.yaml` | `eventa-staging` | the above for staging, plus `LOG_LEVEL: debug` and a ceiling of 4 |
 | `values-dev.yaml` | `eventa-dev` | the above for dev, plus `NODE_ENV: development`, `EMAIL_PROVIDER: log`, no queue-depth metric, no external egress, ceiling of 2 |
 
-**There is no `values-uat.yaml`.** §7 puts UAT at the same parity as staging and
-differs only in data sensitivity and who has access — both of which live in the
-secrets-manager path and in cluster RBAC, not in this chart. UAT syncs
-`values-staging.yaml` with its secret path overridden by its Argo CD
-Application, rather than a fourth near-copy of the same file. The same goes for
-`preview-<pr>`: §7 scales previews to zero when idle, which is an
-`hpa.minReplicas: 0` on the preview `ApplicationSet`, not a file here.
+**There is no `values-uat.yaml`, and UAT is therefore broken.** This is a gap,
+not a design. `argocd/environments/uat/worker.yaml` names
+`valueFiles: [values-uat.yaml]` and carries no `helm.parameters` — no
+Application anywhere in `argocd/` does, because §1.2 makes the values file the
+unit of deployment — so nothing overrides anything, and that Application fails
+with "values file does not exist" on every sync attempt. Its own header opens
+with `THIS APPLICATION CANNOT SYNC YET`. `argocd/README.md` tracks it under
+"Known gaps" and lists what the file has to contain.
+
+Writing it is three or four keys, by the pattern `web` and `relay` already set:
+`environment: uat`, an `image.tag` placeholder, `externalSecret.dataFrom` at
+`/eventa/uat/worker`, and the UAT data-subnet CIDRs. §7 puts UAT at the same
+parity as staging and differs only in data sensitivity and who has access — both
+of which live in the secrets-manager path and in cluster RBAC rather than in
+this chart — so the file is staging's sizing with UAT's own coordinates. Settle
+the CIDR scheme first: the existing overlays disagree, and `argocd/README.md`
+says why a third opinion before the Terraform network module exists makes that
+harder rather than easier.
+
+`preview-<pr>` is different and really is deliberate: §7 scales previews to zero
+when idle, which is an `hpa.minReplicas: 0` on the preview `ApplicationSet`, not
+a file here.
 
 Three decisions worth knowing:
 
@@ -205,17 +220,24 @@ in observability §2 (DLQ depth > 0 warn, > 10 or rising 15 min page) and the
 metric the worker publishes for it is `eventa_consumer_attached`
 (`src/metrics/metrics.service.ts:41`).
 
-## The four guards
+## The five guards
 
-`templates/_guards.tpl` adds four render-time refusals on top of the ones in
+`templates/_guards.tpl` adds five render-time refusals on top of the ones in
 `_library/templates/_validate.tpl`, which already cover everything common to the
 five workloads. Each one here is a failure a cluster accepts and then gets wrong
 *quietly*,
 which is the test `eventa-infra/README.md` sets for the relay guard: make it
-hard to get wrong, not just documented. All four are verified firing.
+hard to get wrong, not just documented. All five are verified firing.
+
+(The file's own header and its inline numbering still say "four": they count the
+four below the `migrationJob` check and omit that check itself, which is the
+same refusal `web`, `relay` and `checkin` each count among their own. Eight
+`fail` call sites implement these five, because three of the five fail on two
+distinct conditions.)
 
 | Guard | The silent failure it prevents |
 | --- | --- |
+| `migrationJob.enabled` must stay false | The Job carries no command, so it runs the worker image's entrypoint — a second consumer competing for the same queues, started outside the Deployment the HPA and PDB govern. `eventa-api` owns every migration and the api chart owns the single wave-1 `PreSync` Job (ci-cd §5.1). |
 | `config.env.PORT` must equal the container port named `http` | The pod serves on one port and is probed on another. Readiness never passes, the rollout stalls on the first new pod, and the container log shows a worker that started normally. |
 | The HPA's `queue` selector must equal `config.env.RABBITMQ_QUEUE` | The autoscaler tracks a queue nobody drains. The real backlog grows with no scale-out, and both objects look correct in isolation. |
 | `EMAIL_PROVIDER` may not be `log` when `NODE_ENV=production` | The log provider records a send and drops the message. eventa-worker refuses to boot on this (`src/config/env.validation.ts:148`); this moves the refusal from a post-sync crash loop to a failed render. |

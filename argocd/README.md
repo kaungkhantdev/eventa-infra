@@ -181,26 +181,51 @@ yet (below).
 
 ## Known gaps
 
-**UAT is 2 of 5.** `deploy/charts/{api,checkin,worker}` have no
-`values-uat.yaml`; `web` and `relay` do. Those three Applications fail with
-`values file does not exist` until someone writes the file, and the reference
-stays in place because that error names the fix. What each file needs, by the
-pattern the other two charts already set:
+**UAT is 3 of 5.** `deploy/charts/{checkin,worker}` have no `values-uat.yaml`;
+`web`, `relay` and `api` do. Those two Applications fail with `values file does
+not exist` until someone writes the file, and the reference stays in place
+because that error names the fix — `ignoreMissingValueFiles` would not make
+them sync, only change which error they report, and
+[apps/uat.yaml](apps/uat.yaml) records why.
+
+What each remaining file needs, by the pattern the other three charts already
+set:
 
 - `environment: uat` and an `image.tag` placeholder (ci-cd §3, §4.1).
 - `externalSecret.dataFrom` at `/eventa/uat/<service>` — §5's per-environment
   path is the entire least-privilege boundary, and it is the reason these files
-  cannot be skipped.
+  cannot be skipped. `checkin` reads the api's own path, `/eventa/uat/api`,
+  because it is the api process (see that chart's values).
 - `config.env` hostnames for UAT. `web`'s overlay already establishes
-  `uat.eventa.dev`.
-- An `ingress.hosts` entry for `api` and `checkin`.
-- `canary.analysis.prometheusAddress` for `api`.
+  `uat.eventa.dev` and `api`'s establishes `api.uat.eventa.dev`.
+- An `ingress.hosts` entry for `checkin`.
 - `networkPolicy.egress.{postgres,redis,rabbitmq}.cidrs`. **Settle the CIDR
-  scheme first.** The existing overlays disagree: `relay/values-uat.yaml` uses
-  `10.30.3.0/24` for UAT while `api/values-prod.yaml` uses `10.30.1-3.0/24` for
-  **prod**. Both are placeholders for the Terraform network module's data-subnet
-  outputs (§1.1), and that module does not exist — so adding a third opinion
-  before it does would make the disagreement harder to resolve, not easier.
+  scheme first.** Every one of these is a placeholder for the Terraform network
+  module's data-subnet outputs (§1.1), and that module does not exist, so
+  adding another opinion before it does makes the disagreement harder to
+  resolve rather than easier.
+
+  The second octet now keys the environment consistently — `10.10` dev,
+  `10.20` staging, `10.30` UAT, `10.40` prod — and that part is settled. What is
+  **not** settled is which subnets inside an environment hold the data tier.
+  Four charts name four different answers for the same managed Postgres:
+
+  | Environment | api / checkin | worker | relay |
+  | --- | --- | --- | --- |
+  | dev | `10.10.1.0/24` | `10.10.1.0/24` | `10.10.3.0/24` |
+  | staging | `10.20.1.0/24` | `10.20.1.0/24` | `10.20.3.0/24` |
+  | UAT | `10.30.1.0/24` | *(no overlay)* | `10.30.3.0/24` |
+  | prod | `10.40.1-3.0/24` | `10.40.8.0/21` | `10.40.3-5.0/24` |
+
+  These are not meant to differ. Both `api/values-prod.yaml` and
+  `relay/values-prod.yaml` say in so many words that they list *all three
+  per-AZ data subnets* because §4 gives Postgres a multi-AZ standby and
+  RabbitMQ a three-node cluster — and then name different three. `worker`
+  states one `/21` supernet instead, which covers `10.40.8.0-10.40.15.255` and
+  so overlaps **neither** of the other two. At most one of the three can be
+  right, and whichever it is, the other two silently lose their database on the
+  first failover. Pick one scheme, apply it to all four charts in one change,
+  and only then write the UAT overlays.
 
 **PR previews are not implemented.** §3.1's `preview-<pr>` namespace and
 ci-cd §1.1's `ApplicationSet` with a PR generator are absent on purpose; the
@@ -237,8 +262,10 @@ Run `helm dependency build deploy/charts/<svc>` first if `charts/` is empty —
 the `file://../_library` dependency is gitignored and `Chart.lock` pins it.
 Argo CD does this itself on every sync.
 
-Expect 17 OK and 3 FAIL: `uat/api`, `uat/checkin` and `uat/worker`, each naming
-the missing `values-uat.yaml`. Any other failure is a regression.
+Expect **18 OK and 2 FAIL**: `uat/checkin` and `uat/worker`, each naming the
+missing `values-uat.yaml`. Any other failure is a regression. Update these two
+numbers in the same change that adds an overlay, or the next person cannot tell
+a regression from a stale count.
 
 **2. Every `path` in this tree exists, and every Application names a declared
 project.** Both are easy to get wrong by renaming a directory:

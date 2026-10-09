@@ -210,10 +210,44 @@ networkPolicy:
     # holds the dedupe keys that make at-least-once delivery safe, and
     # REDIS_URL is required to boot (env.validation.ts:13).
     #
-    # The CIDRs themselves live in values-<env>.yaml via
-    # global.eventa.network.*Cidrs. The library fails the render when a store is
-    # enabled with no CIDR, because a NetworkPolicy rule with an empty peer list
-    # allows every destination rather than none.
+    # ----------------------------------------------------------------------
+    # THE DATA-SUBNET CIDR SCHEME — one scheme, all five charts, every
+    # environment. Change it in all of them in one commit, or not at all.
+    # ----------------------------------------------------------------------
+    # The lists live in values-<env>.yaml under
+    # `global.eventa.network.{postgres,redis,rabbitmq}Cidrs`, which is the one
+    # key path every chart reads them from: the library takes the CIDRs from
+    # there unless a per-store `cidrs` overrides it, and no chart in this repo
+    # overrides it any more. One place per environment, one spelling, so that a
+    # review can compare five charts by looking at the same three keys. The
+    # library fails the render when a store is enabled with no CIDR anywhere,
+    # because a NetworkPolicy rule with an empty peer list allows every
+    # destination rather than none.
+    #
+    # The shape is a PLACEHOLDER, not an address. §1.1 names no cloud provider
+    # and this repo has no `terraform/`, so there is no module output to copy:
+    #
+    #     10.<env>.<az>.0/24    env: 10 dev · 20 staging · 30 uat · 40 prod
+    #                           az:  1, 2, 3 — one /24 per availability zone
+    #
+    # Non-production lists AZ 1 only, because §8 runs dev, staging and UAT on
+    # single-node data services — there is no standby in another zone to allow.
+    # Production lists all three: §4 gives Postgres automatic failover to a
+    # multi-AZ standby and RabbitMQ a three-node cluster, so the endpoint a pod
+    # connects to moves between zones, and an allow covering one zone works
+    # until the first failover.
+    #
+    # One list serves all three stores because §2 puts all three in the same
+    # per-AZ private data subnets; what keeps the three allows distinct is the
+    # per-store port in ../_library/templates/_defaults.tpl.
+    #
+    # This chart used to write a /21 supernet per environment while the other
+    # four wrote /24s, which made "the same scheme" unverifiable by reading:
+    # §2's own control is "NetworkPolicy + security groups", and a control
+    # applied four different ways is not a control. A too-narrow CIDR fails
+    # loudly — readiness cannot reach the database and the rollout halts — while
+    # a too-broad one fails silently, by granting reach into the rest of the
+    # VPC, which is the direction a supernet errs in.
     postgres:
       enabled: true
     redis:

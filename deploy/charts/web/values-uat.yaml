@@ -21,6 +21,14 @@ image:
 hpa:
   minReplicas: 2
   maxReplicas: 6
+  # CPU only, exactly as in values-dev.yaml and for the same reason: no adapter
+  # in this repo publishes `eventa_http_requests_per_second`, and an HPA that
+  # cannot read a metric stops scaling IN altogether, so UAT would hold its
+  # ceiling between acceptance sessions instead of giving the capacity back
+  # (§8). UAT is also the environment §7 reserves for acceptance rather than
+  # load, so the RPS signal has nothing to measure here. values-staging.yaml
+  # keeps it, because staging is where a missing adapter rule should be found.
+  metrics: []
 
 ingress:
   hosts:

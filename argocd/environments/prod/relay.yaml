@@ -41,5 +41,18 @@ spec:
     # §1.3 both gate the production sync on a human: a merged promotion leaves
     # this Application OutOfSync until the release manager syncs it. See
     # ../../apps/prod.yaml for why self-heal cannot also be on here.
+    #
+    # ONE CONSEQUENCE SPECIFIC TO THIS APPLICATION. No `automated` means no
+    # `selfHeal`, so there is no automatic drift reversion here — and the chart's
+    # singleton guard is a render-time guard, which a `kubectl scale` never
+    # reaches. In eventa-dev, eventa-staging and eventa-uat self-heal would put a
+    # hand-scaled relay back to the chart's literal 1; in eventa-prod nothing
+    # does. `kubectl scale deployment/relay -n eventa-prod --replicas=2` will
+    # therefore start a second publisher against the same unlocked outbox rows
+    # and double-publish every event until somebody notices the Application is
+    # OutOfSync. This is the one environment where that reaches a paying buyer,
+    # and it is the one with no net under it. Scale this Deployment to 0 for a
+    # maintenance window and restore it by SYNCING this Application; never scale
+    # it above 1. deploy/charts/relay/README.md has the procedure.
     syncOptions:
       - CreateNamespace=true

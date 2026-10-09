@@ -390,6 +390,51 @@ networkPolicy:
       enabled: true
       namespace: platform
 
+    # THE OTHER HALF OF WEB'S REQUEST PATH. Without this entry the api does not
+    # receive what web sends, and nothing about either workload looks wrong.
+    #
+    # A default-deny namespace (above) needs BOTH the source's egress and the
+    # destination's ingress to allow a connection. ../web/values.yaml carries
+    # the egress half — it selects these pods and port 3000 — and
+    # ../web/README.md states this entry as the half that was missing: "web can
+    # send and the api will not receive". It genuinely was missing: no chart in
+    # this repo set `networkPolicy.ingress.fromPods` at all, so every SSR render
+    # calling `http://api/api/v1` (../web/values.yaml, API_BASE_URL) was dropped
+    # at this end while the Ingress, the Service, the Rollout and the pods all
+    # reported healthy. That is what §3.3's "no pod-to-pod that isn't declared"
+    # does when a declaration is forgotten rather than refused.
+    #
+    # Both labels, not one. `app.kubernetes.io/name` is web's chart name and
+    # `app.kubernetes.io/component` is the label §3.2 uses to tell pools apart;
+    # web's own egress rule narrows on the same pair in the other direction so
+    # that it reaches this pool and not the check-in pool. A peer with no
+    # selector would match every pod in the namespace, which ../_library's
+    # _validate.tpl refuses outright.
+    #
+    # The port is the number 3000 rather than the name `http` so that it is
+    # literally the same token as the other half of the path in
+    # ../web/values.yaml. The library resolves either to a number in the
+    # rendered manifest (../_library/templates/_networkpolicy.tpl), but somebody
+    # checking that the two halves agree should not have to resolve a name to
+    # see it. 3000 is what eventa-api binds
+    # (eventa-api/src/config/env.validation.ts:11) and what ../_library declares
+    # as the container port.
+    #
+    # It belongs in values.yaml rather than in each overlay because web runs in
+    # every environment the api runs in (§3.1, §7). Four per-environment copies
+    # would be four places for one invariant to go missing from, which is how
+    # the original gap happened. checkin needs no equivalent: nothing in the
+    # cluster calls the door pool — its callers are the organizer's own phones
+    # and tablets, which arrive through the ingress controller — and web's only
+    # in-cluster egress is to `component: api`.
+    fromPods:
+      - podSelector:
+          app.kubernetes.io/name: web
+          app.kubernetes.io/component: web
+        ports:
+          - port: 3000
+            protocol: TCP
+
   egress:
     # Stripe, PromptPay and the comms providers, reached through the NAT gateway
     # (§2). The api is the workload that talks to them: it creates
@@ -410,6 +455,47 @@ networkPolicy:
     # networkPolicy.egress.toPods.
     #
     # _validate.tpl refuses to render into a real namespace with neither.
+    #
+    # ------------------------------------------------------------------------
+    # THE DATA-SUBNET CIDR SCHEME — one scheme, all five charts, every
+    # environment. Change it in all of them in one commit, or not at all.
+    # ------------------------------------------------------------------------
+    # The lists live in values-<env>.yaml under
+    # `global.eventa.network.{postgres,redis,rabbitmq}Cidrs`, which is the one
+    # key path every chart reads them from: the library takes the CIDRs from
+    # there unless a per-store `cidrs` overrides it, and no chart in this repo
+    # overrides it any more. One place per environment, one spelling, so that a
+    # review can compare five charts by looking at the same three keys.
+    #
+    # The shape is a PLACEHOLDER, not an address. §1.1 names no cloud provider
+    # and this repo has no `terraform/`, so there is no network-module output to
+    # copy yet:
+    #
+    #     10.<env>.<az>.0/24    env: 10 dev · 20 staging · 30 uat · 40 prod
+    #                           az:  1, 2, 3 — one /24 per availability zone
+    #
+    # Non-production lists AZ 1 only, because §8 runs dev, staging and UAT on
+    # single-node data services — there is no standby in another zone to allow.
+    # Production lists all three: §4 gives Postgres automatic failover to a
+    # multi-AZ standby and RabbitMQ a three-node cluster, so the endpoint a pod
+    # connects to moves between zones, and an allow covering one zone works
+    # until the first failover.
+    #
+    # One list serves all three stores because §2 puts all three in the same
+    # per-AZ private data subnets; what keeps the three allows distinct is the
+    # per-store port in ../_library/templates/_defaults.tpl.
+    #
+    # Why the scheme matters more than the numbers: §2 reaches the data tier
+    # "only from app subnets via NetworkPolicy + security groups", so this list
+    # is one of two controls — and a control applied inconsistently is not a
+    # control. Before this was settled the five charts used four different
+    # schemes, and 10.30.3.0/24 was simultaneously api-prod's Postgres,
+    # checkin-staging's RabbitMQ and relay-uat's Postgres. Replace a list with
+    # the module's output for that environment in the change that creates it;
+    # which zone a single-node store actually lands in is the module's choice,
+    # not a fact this file knows. A too-narrow CIDR fails loudly — readiness
+    # cannot reach the database and the rollout halts — while a too-broad one
+    # fails silently, by granting reach into the rest of the VPC.
 
 # Enabled per environment with that environment's hostname. §3.3 gives the api
 # an Ingress; §7 and devops-ci-cd.md §1.1 give each environment its own host,

@@ -1,16 +1,18 @@
-# THIS APPLICATION CANNOT SYNC YET. deploy/charts/api has no values-uat.yaml,
-# so the `valueFiles` entry below resolves to nothing and Argo CD reports
-# "values file does not exist" instead of deploying.
+# This Application syncs. `deploy/charts/api/values-uat.yaml` exists, so the
+# `valueFiles` entry below resolves and `helm template api deploy/charts/api -f
+# deploy/charts/api/values-uat.yaml -n eventa-uat` renders.
 #
-# The reference stays anyway, because that error names the fix. `web` and
-# `relay` both ship a values-uat.yaml and both explain in its header why a
-# fourth overlay was needed; these three charts were built with dev, staging and
-# prod only. Nothing here is unsafe either way — every chart refuses to render
-# without an environment overlay, and the api fails on `canary.analysis`
-# having no Prometheus address —
-# but those messages send the reader into the chart's templates, while a
-# missing-file error sends them to the file that is actually missing.
-# ../../README.md says what the overlay has to contain.
+# It did not always. For a while this chart had no UAT overlay and this
+# Application reported "values file does not exist", which had a consequence
+# beyond the api itself: the namespace-wide default-deny NetworkPolicy is
+# namespace-scoped and ../../../deploy/charts/_library/README.md puts it on the
+# api, the one chart every namespace runs. With no api release in `eventa-uat`,
+# `web` and `relay` ran there with every pod-to-pod path open — the opposite of
+# devops-infrastructure.md §3.3, arrived at by a missing file rather than by a
+# decision. That chart's values-uat.yaml header records it.
+#
+# `checkin` and `worker` are still in that state. See ../../README.md,
+# "Known gaps", and ../../apps/uat.yaml.
 
 # api — the core API, and the only chart of the five that is deployed
 # progressively (devops-ci-cd.md §4.2): its workload object is an Argo Rollouts

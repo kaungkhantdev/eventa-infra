@@ -23,14 +23,26 @@ image:
   # The private in-region registry of devops-ci-cd.md §3; the path follows the
   # convention already set in _library/README.md.
   repository: registry.eventa.internal/eventa/web
-  # A placeholder, and the only value in this file that no release ever runs: a
-  # deployment always takes its tag from values-<env>.yaml, which the promotion
-  # bot bumps (devops-ci-cd.md §4.1, §3's "promotion is by digest, not
-  # rebuild"). It is here so the chart lints and renders on its own, and it has
-  # the shape of a SHA because §3 permits nothing else — the library refuses
-  # `latest` and `main` outright. A forgotten overlay therefore fails loudly on
-  # ImagePullBackOff rather than quietly shipping yesterday's build.
-  tag: sha-0000000
+  # `tag` is deliberately ABSENT, and its absence is what stops this chart from
+  # rendering on values.yaml alone.
+  #
+  # devops-infrastructure.md §1.2 makes "chart + per-env values-<env>.yaml" the
+  # unit of deployment and promotes an environment by moving the pinned SHA in
+  # that environment's file (devops-ci-cd.md §4.1, and §3's "promotion is by
+  # digest, not rebuild"). A placeholder tag here would be a fifth place the
+  # promotion bot would have to know about — and the one it would forget — so
+  # every tag this chart ever runs lives in an overlay.
+  #
+  # The consequence is the point, and it is why this is not just tidiness:
+  # without a tag, `helm template web deploy/charts/web` fails the values schema
+  # on `image` (its `anyOf` wants a tag or a digest) instead of emitting eight
+  # objects assembled from a baseline that no environment supplies. One of those
+  # eight was an Ingress whose body was `rules:` and nothing else, because the
+  # hostnames are per-environment (§7) and only an overlay carries them — an
+  # object that applies cleanly and routes nothing. checkin, worker and relay
+  # already refuse to render bare for exactly this reason; web was the one chart
+  # that did not. Render it with an environment's values, as Argo CD always does
+  # (§1.2).
 
 environment: prod
 
@@ -73,16 +85,26 @@ hpa:
         metric:
           # RPS — the other half of §3.2's signal.
           #
-          # No document names this series. The name belongs to whichever
+          # No document names this series: the name belongs to whichever
           # Prometheus adapter an environment runs and §6 commits to none, which
           # is why ../_library ships no metric names at all. It is stated here
-          # instead of omitted so the chart implements the signal §3.2 requires,
-          # and because the failure mode is visible: until an adapter exposes
-          # this series the HPA reports FailedGetPodsMetric on the object and
-          # carries on scaling from CPU, since the controller only gives up when
-          # every metric is unavailable. The alternative — shipping CPU alone —
-          # would look complete and silently be half the specified policy.
-          name: http_requests_per_second
+          # instead of omitted so the chart implements the signal §3.2 requires.
+          #
+          # The name is `eventa_http_requests_per_second` — the SAME series the
+          # api and checkin charts scale on — because §3.2 names the same signal
+          # for all three and one adapter rule has to be able to satisfy all
+          # three. This chart previously asked for `http_requests_per_second`,
+          # unprefixed, which made web's request rate a second series somebody
+          # would have to notice and write a second rule for; the `eventa_`
+          # prefix is also what the api already uses for the gauges it does
+          # emit (eventa-api/src/modules/metrics/metrics.service.ts).
+          #
+          # Until an adapter exposes it, the HPA reports FailedGetPodsMetric and
+          # carries on scaling UP from CPU while refusing to scale IN — which is
+          # why values-dev.yaml and values-uat.yaml drop this entry rather than
+          # inherit it. See the comment there; the mechanism is spelled out in
+          # ../worker/values-dev.yaml.
+          name: eventa_http_requests_per_second
         target:
           type: AverageValue
           # Requests per second per pod. No document fixes this; §3.3 calls even
@@ -182,7 +204,16 @@ networkPolicy:
 #   * TLS terminates at the edge or the L7 load balancer per §2, so there is no
 #     certificate for this object to reference.
 #
-# The hostnames are per-environment and live in the overlays (§7).
+# The hostnames are per-environment and live in the overlays (§7). With no
+# overlay this chart no longer renders at all (see image.tag above), so there is
+# no longer a path to the hostless Ingress — `spec: rules:` and nothing else —
+# that a bare render used to emit. One gap remains and is not fixable from
+# values: ../checkin/templates/_guards.tpl:47 refuses an enabled Ingress with no
+# host, because that object "applies without complaint and routes nothing", and
+# this chart has no equivalent guard — so an overlay that set an image tag and
+# forgot `ingress.hosts` would still render one. That guard's own docblock says
+# it belongs in ../_library/templates/_validate.tpl "once a second chart wants
+# them"; this is the second chart.
 ingress:
   enabled: true
 

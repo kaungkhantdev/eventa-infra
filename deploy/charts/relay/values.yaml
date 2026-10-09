@@ -256,20 +256,50 @@ networkPolicy:
       enabled: false
 
   egress:
-    # Postgres. The relay reads `outbox_events` where `published_at IS NULL` and
-    # sets `published_at` — two columns of one table
-    # (eventa-relay/src/db/schema/outbox.ts:16-18). It writes to the PRIMARY, not
-    # the read replica of §4, because marking a row published is a write.
+    # ----------------------------------------------------------------------
+    # THE DATA-SUBNET CIDR SCHEME — one scheme, all five charts, every
+    # environment. Change it in all of them in one commit, or not at all.
+    # ----------------------------------------------------------------------
+    # A managed service in a private data subnet (§2) is not a pod, so each
+    # allow below is an ipBlock and cannot be a podSelector. The lists are
+    # per-environment and live in values-<env>.yaml under
+    # `global.eventa.network.{postgres,rabbitmq}Cidrs`, which is the one key
+    # path every chart reads them from: the library takes the CIDRs from there
+    # unless a per-store `cidrs` overrides it, and no chart in this repo
+    # overrides it any more. The stores below are enabled here with no CIDR on
+    # purpose — the library refuses to render an egress rule whose peer list is
+    # empty, because such a rule allows every destination instead of none, and
+    # this chart has no bare render to protect anyway (it has no image tag
+    # either, so values.yaml alone never renders).
     #
-    # The CIDR is per-environment and comes from the Terraform network module's
-    # data-subnet output (§1.1, §2) — a managed service in a private subnet is
-    # not a pod, so the allow is an ipBlock and cannot be a podSelector. Enabled
-    # here with no CIDR on purpose: the library refuses to render an egress rule
-    # with an empty peer list, because such a rule allows every destination
-    # instead of none.
+    # The shape is a PLACEHOLDER, not an address. §1.1 names no cloud provider
+    # and this repo has no `terraform/`:
+    #
+    #     10.<env>.<az>.0/24    env: 10 dev · 20 staging · 30 uat · 40 prod
+    #                           az:  1, 2, 3 — one /24 per availability zone
+    #
+    # Non-production lists AZ 1 only, because §8 runs dev, staging and UAT on
+    # single-node data services — there is no standby in another zone to allow.
+    # Production lists all three: §4 gives Postgres automatic failover to a
+    # multi-AZ standby and RabbitMQ a three-node cluster, so the endpoint this
+    # pod connects to moves between zones during a failover, and an allow
+    # covering only the current primary's subnet works perfectly until the first
+    # one — after which the relay stops publishing and the NetworkPolicy is the
+    # last place anyone looks.
+    #
+    # Both stores share one list per environment because §2 puts them in the
+    # same per-AZ data subnets; what keeps the two allows distinct is the
+    # per-store port in ../_library/templates/_defaults.tpl. This chart used to
+    # put production on 10.40.3-5 and UAT on 10.30.3, which collided with the
+    # api chart's production range — §2's control is "NetworkPolicy + security
+    # groups", and a control applied inconsistently is not a control.
+    #
+    # Postgres: the relay reads `outbox_events` where `published_at IS NULL` and
+    # sets `published_at` — two columns of one table
+    # (eventa-relay/src/db/schema/outbox.ts:16-18). It writes to the PRIMARY,
+    # not the read replica of §4, because marking a row published is a write.
     postgres:
       enabled: true
-      cidrs: []
 
     # No Redis. §3.3's list groups the relay with api/checkin/worker for all
     # three data stores, but eventa-relay's env schema has no REDIS_URL and the
@@ -286,7 +316,6 @@ networkPolicy:
     # `amqps://` URL for this allow to match the connection it opens.
     rabbitmq:
       enabled: true
-      cidrs: []
 
     # No egress to the internet. §3.3 allows Stripe/PromptPay/comms through NAT
     # for the workloads that call them; the relay calls none. It publishes an

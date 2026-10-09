@@ -128,15 +128,28 @@ invariants JSON Schema cannot express. The highlights:
 `api/v1`), so its chart sets `/api/v1/health/ready` and `/api/v1/health/live`.
 The spec's `/health/*` is the default here because it is what §3.3 states.
 
-The relay is an application context with no HTTP server at all
-(`eventa-relay/src/main.ts`), so it uses `exec` probes. **The worker is not:** it
-does serve a small HTTP surface for probes on `PORT` (default 3100 —
-`eventa-worker/src/main.ts:18`, routes in `eventa-worker/src/health/health.controller.ts`),
-and its liveness endpoint already reports "attached to the queue" rather than
-"the event loop still turns". §3.3's "workers/relay use exec/TCP checks (no HTTP
-server)" is therefore accurate for the relay and out of date for the worker. The
-library supports all three handler types and takes no position; the worker chart
-should use the endpoints that exist.
+§3.3's one sentence about the other two — "workers/relay use exec/TCP checks (no
+HTTP server) plus broker-connection health" — does not hold for either of them,
+in opposite directions. The library supports all three handler types and takes
+no position; both charts state their own and say why.
+
+- **The relay ships no probes at all.** It is an application context with no
+  HTTP server (`eventa-relay/src/main.ts:24` calls
+  `NestFactory.createApplicationContext`), so the parenthetical is right about
+  it — but the prescription is not implementable: TCP has nothing to connect to,
+  and the `exec` health command the sentence implies is not in the image. **Do
+  not read "the relay uses exec probes" out of this section.**
+  [The relay's shape](#per-workload-reference-values) below spells out what
+  pointing `exec` at an absent CLI costs, and `relay/values.yaml` argues it at
+  length.
+- **The worker uses HTTP probes, because the parenthetical is out of date for
+  it.** It does serve a small HTTP surface for probes on `PORT` (default 3100 —
+  `eventa-worker/src/main.ts:18`, routes in
+  `eventa-worker/src/health/health.controller.ts:27,36`), and its liveness
+  endpoint already reports "attached to the queue" rather than "the event loop
+  still turns", which is the broker-connection health the same sentence asks
+  for. Following the letter would give it either an `exec` command that does not
+  exist or a TCP check that asserts nothing.
 
 ### Network
 
@@ -271,23 +284,68 @@ RPS, p95 latency and queue depth go in `hpa.metrics` as `Pods`/`Object`/
 whichever Prometheus adapter an environment runs, and no document names one, so
 a name invented here would produce an HPA that reports `<unknown>` forever.
 
+Below are the keys that define the shape of the guard, copied verbatim from the
+real [`../relay/values.yaml`](../relay/values.yaml) with its comments and its
+environment-independent remainder (`resources`, `config.env`,
+`externalSecret`, `networkPolicy`, `argocd.syncWave`) left out. **Read that file
+before copying any of this.** Every line here that looks like an omission is
+argued there at length, and three of them are the opposite of what a reader
+would guess.
+
 ```yaml
-# relay/values.yaml — the shape of the guard in use
+# deploy/charts/relay/values.yaml — the shape of the guard in use
 component: relay
-image: { repository: registry.eventa.internal/eventa/relay, tag: sha-9f3c1a2 }
+image: { repository: registry.eventa.internal/eventa/relay }   # tag: in values-<env>.yaml
 singleton:
   enabled: true
-  reason: "The outbox reader takes no row lock, so a second replica double-publishes every event."
+  reason: "fetchBatch takes no row lock, so a second replica selects the same outbox rows and publishes every event twice. Consumers dedupe only after the first copy completes."
   evidence: "eventa-relay/src/relay/outbox-reader.repository.ts:25"
+replicas: 1                          # redundant; the Deployment writes the literal 1
+hpa: { enabled: false }
 service: { enabled: false }          # answers no requests
-ports: [{ name: metrics, containerPort: 3200 }]
-metrics: { port: metrics }
-probes:
-  readiness: { type: exec, exec: { command: ["node", "dist/health/readiness-cli.js"] } }
-  liveness:  { type: exec, exec: { command: ["node", "dist/health/liveness-cli.js"] } }
+ports: []                            # binds nothing: it is an application context, not a server
+metrics: { enabled: false }          # nothing to scrape — see below
+probes:                              # all three off — see below
+  readiness: { enabled: false }
+  liveness:  { enabled: false }
+  startup:   { enabled: false }
 pdb: { minAvailable: 1 }
-terminationGracePeriodSeconds: 90    # ≥ the longest handler (ci-cd §5.3)
+terminationGracePeriodSeconds: 60    # bounds one in-flight pass (ci-cd §5.3)
 ```
+
+Three of those need the reason, because the plausible-looking alternative is
+actively wrong:
+
+- **`ports: []` and `metrics.enabled: false`.** `eventa-relay/src/main.ts:24`
+  calls `NestFactory.createApplicationContext` — there is no `listen`, no
+  controller and no port anywhere in `eventa-relay/src`. Declaring a
+  `containerPort` would be a false claim about the process in the one place
+  (`kubectl describe pod`) where somebody would read it and believe it, and a
+  scrape annotation would advertise a target that never answers.
+  `devops-observability-sre.md` §1 does ask for `/metrics` on all five
+  workloads; §2 anticipates this one and sources outbox lag from a "relay gauge
+  / DB query exporter" instead, which is the better signal anyway because it
+  still reports when the relay is gone.
+- **All three probes off.** §3.3 sends the relay to "exec/TCP checks … plus
+  broker-connection health" and `devops-ci-cd.md` §4.3 wants it to check "it can
+  read the outbox and reach RabbitMQ". That is the right probe and
+  `eventa-relay` does not ship it: no health module, no CLI entrypoint, no
+  second binary in the image. **Do not point `exec` at a command that is not
+  there.** Readiness would never pass, and because a singleton rolls with
+  `maxSurge: 0` the old publisher is deleted *before* the new one starts — so
+  every deploy would leave the platform with **zero** publishers until
+  `progressDeadlineSeconds` expires. A command that cannot fail, such as
+  `node -e ''`, is no better: it reports health nothing checked, and the relay's
+  real failure, running but not publishing, reads as green.
+  `relay/values.yaml` carries the exact commented-out block to uncomment on the
+  day a CLI lands, and says to leave liveness off even then.
+- **`terminationGracePeriodSeconds: 60`, not longer.** It bounds one in-flight
+  pass, not "the longest handler" — the relay has no handlers. Correctness does
+  not depend on finishing the pass: a row is marked published only after its
+  confirm returns, so anything cut off is still `published_at IS NULL` and goes
+  out next pass. The budget exists so `SIGKILL` does not land between a
+  publisher confirm and the `UPDATE` that records it, which is the one way this
+  service delivers a message twice on its own.
 
 ## Verifying a change
 

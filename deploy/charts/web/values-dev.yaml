@@ -28,6 +28,23 @@ config:
 hpa:
   minReplicas: 1
   maxReplicas: 3
+  # Clears the RPS entry from values.yaml, leaving the CPU target alone.
+  #
+  # Not a simplification — a correctness fix for this environment. Nothing in
+  # this repo publishes `eventa_http_requests_per_second` to the custom-metrics
+  # API and no document names an adapter that could, so the read fails. An HPA
+  # whose custom metric cannot be read does not merely report <unknown>: the
+  # controller sets ScalingActive=False and declines to scale IN for as long as
+  # any metric read is failing, because the metric it cannot read might be the
+  # one asking for more replicas. One busy afternoon would therefore pin web at
+  # its ceiling and keep it there, billed by the hour — the opposite of §8's
+  # "non-prod scales down/off outside working hours". ../api/values-dev.yaml
+  # ships CPU only for the same reason and ../worker/values-dev.yaml spells the
+  # mechanism out at length.
+  #
+  # Put it back the same day the adapter rule lands, so dev keeps exercising the
+  # signal §3.2 gives production.
+  metrics: []
 
 ingress:
   hosts:

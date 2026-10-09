@@ -58,11 +58,21 @@ is evaluated against the destination pod IP after the Service's DNAT — and
 narrows on `app.kubernetes.io/component: api` so it excludes the check-in pool,
 which runs the same image under the same name (§3.2).
 
-> **This is half of the path.** A default-deny namespace requires the source's
-> egress *and* the destination's ingress to allow the connection. The api chart
-> must therefore carry a matching `networkPolicy.ingress.fromPods` entry
-> selecting `app.kubernetes.io/name: web`. Until it does, web can send and the
-> api will not receive.
+> **This is half of the path, and the other half lives in the api chart.** A
+> default-deny namespace requires the source's egress *and* the destination's
+> ingress to allow the connection. For a while no chart in this repo set
+> `networkPolicy.ingress.fromPods` at all, so web could send and the api would
+> not receive — in every environment, with the Ingress, Service, Rollout and
+> pods all reporting healthy. `api/values.yaml` now carries the matching entry,
+> selecting `app.kubernetes.io/name: web` **and**
+> `app.kubernetes.io/component: web` on 3000, in the baseline rather than an
+> overlay so that every environment inherits it.
+>
+> Keep the two halves in the same change whenever either moves. §3.3's "no
+> pod-to-pod that isn't declared" makes a *forgotten* declaration silent, which
+> is the opposite of how the rest of this chart's mistakes behave: an undeclared
+> egress CIDR is a render error, but an undeclared ingress peer is a connection
+> that is simply dropped.
 
 ## Environments
 
@@ -119,13 +129,22 @@ person can disagree with the reasoning rather than guess at it:
 | The prod hostname | `www.eventa.invalid`, fails closed | See above. The non-prod hosts extrapolate from `pr-<n>.preview.eventa.dev` (`devops-ci-cd.md` §1.1), the only domain any document names; the product's own domain is not derivable from it. |
 | `ingress.className`, `annotations`, `tls` | Unset | All three name a specific ingress controller, and §3.1 says only that the controller runs in `platform`. An Ingress with no class is admitted by the cluster's default IngressClass, and §2 terminates TLS at the edge/load balancer, so there is no certificate for this object to reference. |
 
-Also worth knowing: the rendered NetworkPolicy has **two identical ingress
-rules** admitting the `platform` namespace on the http port — one for the
-ingress controller, one for the metrics scraper. Both run in `platform` (§3.1)
-and no document names a label for either, so the library cannot narrow them
-past the namespace. They are separate allows with separate reasons and will
-diverge the moment a `podSelector` can be written for one; the overlap is
-cosmetic, not an extra permission.
+Also worth knowing: the rendered NetworkPolicy has **two ingress rules that
+differ only in a placeholder** — one for the ingress controller, one for the
+metrics scraper, both in `platform` (§3.1) on the http port. §3.1 names neither
+product, so the library ships each with a `podSelector` of
+`app.kubernetes.io/name: REPLACE-ME-ingress-controller` and
+`REPLACE-ME-metrics-scraper`: the right shape with a deliberately wrong value.
+A namespace-only peer was not an option — `platform` also holds Argo CD and
+External Secrets, so it would let the Argo CD repo-server open a connection
+straight to web, and `_library/templates/_validate.tpl` refuses that form.
+
+**Both placeholders fail closed.** No pod carries either label, so until they are
+replaced this workload takes no inbound traffic at all, including the Prometheus
+scrape. That is the safe direction for a policy and it is visible — the marker
+string appears verbatim in the rendered object and in an Argo CD diff — but it
+does mean these two values have to be set before the first real sync, and they
+are not Terraform outputs like the rest of this chart's placeholders.
 
 ## Verifying a change
 

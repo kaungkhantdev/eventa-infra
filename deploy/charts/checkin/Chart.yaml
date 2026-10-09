@@ -16,7 +16,7 @@ dependencies:
   # Every object this chart renders comes from the shared library chart, which is
   # what devops-infrastructure.md §1.2 asks for: probes, HPA, PDB, NetworkPolicy
   # and ExternalSecret live in one place so the five workloads cannot drift
-  # apart. This chart contributes values and four guards, no object templates.
+  # apart. This chart contributes values and five guards, no object templates.
   #
   # `file://` resolves inside this repository, so `helm dependency build` works
   # for Argo CD and in CI without a chart museum. The vendored tarball under

@@ -17,13 +17,25 @@ ingress:
   hosts:
     # REPLACE THIS BEFORE THE FIRST PRODUCTION SYNC.
     #
-    # No document in eventa-docs names the production hostname. §2 puts CDN →
-    # WAF → public load balancer in front of this Ingress, so the public name is
-    # a DNS and edge decision that belongs to the Terraform `edge` and DNS
-    # modules in §1.1 — neither of which has been written, and neither of which
-    # this chart may guess at. `pr-<n>.preview.eventa.dev` (devops-ci-cd.md
-    # §1.1) establishes the engineering domain used by the three non-prod
-    # overlays; it says nothing about the product's own domain.
+    # THE PRODUCTION DOMAIN IS UNDECIDED, and `eventa.invalid` is the single
+    # placeholder all five charts now use for it — api's Ingress, CORS_ORIGINS
+    # and PUBLIC_API_URL, checkin's Ingress, and the links the worker writes
+    # into mail all point at this same zone. They did not before: api asserted
+    # `eventa.dev` while checkin and worker asserted `eventa.co.th`, so three
+    # plausible-looking domains stood side by side and api's CORS_ORIGINS did
+    # not contain the host this Ingress serves — which would have rejected every
+    # browser call from the SSR origin. If this name changes, change it in all
+    # five charts in one commit.
+    #
+    # Why no real name can be written yet: no document in eventa-docs names the
+    # production hostname. §2 puts CDN → WAF → public load balancer in front of
+    # this Ingress, so the public name is a DNS and edge decision belonging to
+    # the Terraform `edge` and DNS modules in §1.1, neither of which has been
+    # written. `pr-<n>.preview.eventa.dev` (devops-ci-cd.md §1.1) is the only
+    # domain any document names and it establishes the engineering domain the
+    # three non-prod overlays use; it says nothing about the product's own
+    # domain. `eventa.co.th` appears in eventa-docs only as test data
+    # (06-testing/test-cases.md:503), which is not a deployment decision.
     #
     # `.invalid` is reserved by RFC 2606 and resolves nowhere, so a forgotten
     # placeholder fails closed: production web is unreachable and somebody
