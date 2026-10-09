@@ -176,29 +176,79 @@ it:
 ```sh
 helm template relay deploy/charts/relay -n eventa-prod \
   -f deploy/charts/relay/values-prod.yaml --set replicas=2
-# Error: execution error at (relay/templates/workload.yaml:17:4):
-# SINGLETON GUARD — refusing to render the `relay` chart.
+# Error: execution error at (relay/templates/workload.yaml:18:4): SINGLETON GUARD — refusing to render the `relay` chart.
+#
+# replicas is set to 2, and this workload is declared a singleton.
+#
+# Why: fetchBatch takes no row lock, so a second replica selects the same outbox rows and publishes every event twice. Consumers dedupe only after the first copy completes.
+#
+#   [lines 6–29 of 30 elided: the two source citations below, the §3.2 quotes,
+#    and the three-step lift order]
+#
+# Use --debug flag to render out invalid YAML
 ```
 
-The same guard trips on `hpa.enabled=true`, on
-`updateStrategy.rollingUpdate.maxSurge=1` (a surge *is* a second replica), on
-`singleton.enabled=false`, on `migrationJob.enabled=true` (the Job runs the
-relay image's own entrypoint, so it is a second publisher that never touches the
-replica count) and on `replicaCount`, which is Helm's conventional key name and
-not this library's — it used to be accepted and silently ignored, which left the
-manifest right and the operator's belief about it wrong. All six are verified
-failing. There is also no Argo CD route to any of them: no Application in
-`argocd/` carries a `helm.parameters` block, so the replica count cannot be
-overridden from outside the values files the chart validates.
+Helm puts the location and the first line of the message on **one** line, so
+`grep SINGLETON` finds the banner and the file:line together. The location is
+`workload.yaml:18`, which is the `eventa-library.workload` include and not the
+`relay.guard` include on line 17 — because this particular refusal lives in the
+library rather than in the relay's own guard. That split is the thing to know
+when you are reading one of these errors:
+
+**There are six refusals, they live in two files, and the line number tells you
+which file you are in.**
+
+| `--set` that trips it | Refused in | Reported at |
+| --- | --- | --- |
+| `replicas=2` — any explicit value above 1, in a values file or on the command line | `deploy/charts/_library/templates/_validate.tpl:328` | `workload.yaml:18:4` |
+| `hpa.enabled=true` | `deploy/charts/_library/templates/_validate.tpl:331` | `workload.yaml:18:4` |
+| `updateStrategy.rollingUpdate.maxSurge=1` — a surge *is* a second replica | `deploy/charts/_library/templates/_validate.tpl:345` | `workload.yaml:18:4` |
+| `singleton.enabled=false` | `deploy/charts/relay/templates/_guard.tpl:32` | `workload.yaml:17:4` |
+| `migrationJob.enabled=true` — the Job runs the relay image's own entrypoint, so it is a second publisher that never touches the replica count | `deploy/charts/relay/templates/_guard.tpl:35` | `workload.yaml:17:4` |
+| `replicaCount=2` — Helm's conventional key name and not this library's; it used to be accepted and silently ignored, which left the manifest right and the operator's belief about it wrong | `deploy/charts/relay/templates/_guard.tpl:38` | `workload.yaml:17:4` |
+
+The library's three are gated on `singleton.enabled`, and that is precisely why
+the relay's three are not: turning that switch off would otherwise disable the
+other half of the set, so the relay's own file refuses the switch itself. That
+is also why the relay's three report the *earlier* line — `_guard.tpl` runs from
+`workload.yaml:17`, before the library's own validation on line 18 gets a say.
+
+Re-run the whole set rather than trusting the count; each line must print a
+refusal and exit non-zero:
+
+```sh
+for s in replicas=2 hpa.enabled=true updateStrategy.rollingUpdate.maxSurge=1 \
+         singleton.enabled=false migrationJob.enabled=true replicaCount=2; do
+  helm template relay deploy/charts/relay -n eventa-prod \
+    -f deploy/charts/relay/values-prod.yaml --set "$s" >/dev/null 2>&1 \
+    && echo "RENDERED (guard hole) $s" || echo "refused $s"
+done
+# refused replicas=2
+# refused hpa.enabled=true
+# refused updateStrategy.rollingUpdate.maxSurge=1
+# refused singleton.enabled=false
+# refused migrationJob.enabled=true
+# refused replicaCount=2
+```
+
+There is also no Argo CD route to any of them: no Application in `argocd/`
+carries a `helm.parameters` block, so the replica count cannot be overridden
+from outside the values files the chart validates.
 
 **The guard stops at the cluster boundary, and production has no net past it.**
-Every one of those four refusals happens at *render* time, and `kubectl scale`
+Every one of those six refusals happens at *render* time, and `kubectl scale`
 never renders the chart. In `eventa-dev`, `eventa-staging` and `eventa-uat`
 Argo CD self-heal is the backstop — a hand-scaled relay goes back to the chart's
-literal `1` on its own. **`eventa-prod` has no `automated` block at all**, so
-nothing reverts anything there: §1.3 asks for both a gated production sync and
+literal `1` on its own. **None of the five service Applications in
+`argocd/environments/prod/` carries an `automated` block**, so nothing reverts
+anything in `eventa-prod`: §1.3 asks for both a gated production sync and
 self-heal, Argo CD cannot give both, and
-[argocd/README.md](argocd/README.md) records that the gate wins. A
+[argocd/README.md](argocd/README.md) records that the gate wins. The prod
+*root* in [argocd/apps/prod.yaml](argocd/apps/prod.yaml) does carry
+`automated: {prune: true, selfHeal: true}` and that is not the hole it looks
+like: the root renders Application objects into `platform` and nothing into
+`eventa-prod`, so its self-heal reverts a deleted child Application, never a
+hand-scaled Deployment. A
 `kubectl scale deployment/relay -n eventa-prod --replicas=2` therefore starts a
 second publisher and duplicates every event for as long as nobody reads the
 OutOfSync status. Scale it to `0` or `1`, never above;
@@ -332,12 +382,21 @@ is a list the next reader stops checking, including on the two below, which are
 real.
 
 `eventa-docs` is read-only from here, so the remaining two need somebody with
-write access. Both were re-read against the current text before being kept:
+write access. Both were re-read against the current text before being kept, and
+every line number below was produced by this command rather than carried over —
+re-run it before trusting the column, because `eventa-docs` is edited
+independently of this repo and a line number is the first thing to rot:
+
+```sh
+cd ../eventa-docs
+grep -n "all 5 workloads" 08-maintenance/devops-observability-sre.md
+grep -n "api/checkin/worker/relay\|exec/TCP" 07-deployment/devops-infrastructure.md
+```
 
 | Document and entry | Should say | Verified still wrong |
 | --- | --- | --- |
 | `devops-observability-sre.md` §1, Metrics row | "all 5 workloads via `/metrics`" → four; the relay is measured by the DB query exporter §2 already names. | Still reads "all 5 workloads via `/metrics`, plus RabbitMQ, Postgres, Redis exporters" (§1, line 39). |
-| `devops-infrastructure.md` §3.3, NetworkPolicy allows and probes bullet | Drop `relay` from the Redis grouping, and drop "(no HTTP server)" from the workers half of the probes sentence. | Still reads "api/checkin/worker/relay → Postgres/Redis/RabbitMQ" (line 264) and "Workers/relay use exec/TCP checks (no HTTP server)" (line 251). |
+| `devops-infrastructure.md` §3.3, NetworkPolicy allows and probes bullet | Drop `relay` from the Redis grouping, and drop "(no HTTP server)" from the workers half of the probes sentence. | Still reads "api/checkin/worker/relay → Postgres/Redis/RabbitMQ" (line 264) and "Workers/relay use exec/TCP checks (no HTTP server) plus broker-connection health." (line 253). |
 
 Until those two land, a reader of those sections will believe them and reopen a
 settled question. The two charts that deviate carry their own entries in an
@@ -375,35 +434,57 @@ of §7's four parity environments, so all 20 service/environment pairs render
 today. The `[ -f "$f" ]` guard is kept because a `SKIP` is the clearest possible
 report of an overlay that has been deleted or renamed. Verified with helm 4.3.0.
 
-**No chart renders without an environment overlay, and that is deliberate.** The
-baseline `values.yaml` of each chart is the production sizing from §3.3 with
-nothing environment-specific in it; the overlay supplies the image tag, the
-secret path, the hostnames and the data-subnet CIDRs. Rendering without one
-fails, rather than quietly deploying a chart that has no secrets and an
-unpullable image.
+**No chart deploys into an environment without that environment's overlay, and
+that is deliberate.** The baseline `values.yaml` of each chart is the production
+sizing from §3.3 with nothing environment-specific in it; the overlay supplies
+the image tag, the secret path, the hostnames and the data-subnet CIDRs.
+Rendering for an environment without one fails, rather than quietly deploying a
+chart that has no secrets and an unpullable image.
 
-They do not all fail on the same thing, and the difference matters when you are
-reading an error:
+**The namespace is load-bearing in that sentence, and `-n` is easy to drop.**
+The checks that guard environment coordinates are gated on the namespace being
+one of §7's four (`deploy/charts/api/templates/_validate.tpl:27`, `$isEnv`),
+because
+`values.yaml` deliberately holds no environment's Prometheus URL and a bare
+baseline render is not a deploy. So `helm template api deploy/charts/api` with
+no `-n` **succeeds** — 626 lines, exit 0 — and only the namespaced form refuses:
 
-| Chart | `helm template <chart> deploy/charts/<chart>` fails on |
-| --- | --- |
-| `web`, `checkin`, `worker`, `relay` | the values schema, at `/image`: no usable `tag` and no `digest`. (`web`, `checkin` and `relay` have no `tag` key at all; `worker`'s is present and empty, so its message is a `minLength` failure rather than a missing property.) |
-| `api` | its **templates** — `canary.analysis` has a Prometheus gate with no `prometheusAddress` |
+```sh
+helm template api deploy/charts/api -n eventa-prod
+# Error: execution error at (api/templates/workload.yaml:19:10): [api] canary.analysis has a Prometheus gate with no address. Set canary.analysis.prometheusAddress (per environment — devops-observability-sre.md §1 puts the metric sink in the `platform` namespace), or an address on the individual metric. An unreachable provider makes every measurement an error, and with failureLimit 0 that aborts every api deploy at the first step for a reason that has nothing to do with the build.
+#
+# Use --debug flag to render out invalid YAML
+```
 
-The api's baseline does not reach the image check, because `canary.analysis` is
-validated first; the overlay is where the Prometheus address lives
+The other four refuse either way, because a values-schema failure does not
+depend on the namespace. They do not all fail on the same thing, and the
+difference matters when you are reading an error:
+
+| Chart | `helm template <chart> deploy/charts/<chart> -n eventa-prod` fails on | …without `-n` |
+| --- | --- | --- |
+| `web`, `checkin`, `worker`, `relay` | the values schema, at `/image`: no usable `tag` and no `digest`. (`web`, `checkin` and `relay` have no `tag` key at all; `worker`'s is present and empty, so its message is a `minLength` failure rather than a missing property.) | same |
+| `api` | its **templates** — `canary.analysis` has a Prometheus gate with no `prometheusAddress` | renders |
+
+The api never reaches an image check at all, and not because `canary.analysis`
+is validated first: schema validation runs *before* any template, and the api's
+baseline passes it, because `deploy/charts/api/values.yaml:27` carries
+`tag: sha-0000000` — a syntactically valid SHA tag kept there precisely so the
+chart renders. What the overlay supplies for the api is the Prometheus address
 (observability §1 puts the metric sink in `platform`, per environment). So a
-missing overlay is always caught, but "the image tag is missing" is not a
-reliable thing to expect in the message.
+missing overlay is always caught on a namespaced render, but "the image tag is
+missing" is not a reliable thing to expect in the message.
 
 Use the release name shown above — the **service** name, not a per-environment
 one, because `web` reaches the api at `http://api/api/v1`.
 
-**`kubectl apply --dry-run=client` does not work here.** It resolves every `kind`
-through API discovery against a live API server, so with no cluster it fails on
-`connection refused` before validating anything, and `--validate=false` fails the
-same way on `/api`. Offline schema validation needs `kubeconform`, which is not
-installed. Each chart's README records this too.
+**`kubectl apply --dry-run=client` does not work here.** Even "client" validation
+downloads the OpenAPI schema from a live API server, so with no cluster it fails
+on `connection refused` before validating anything —
+`failed to download openapi: Get "http://localhost:8080/openapi/v2…"` — and
+`--validate=false` only moves the failure to API-group discovery on
+`http://localhost:8080/api`. Offline schema validation needs `kubeconform`,
+which is not installed (`kubeconform not found`). Each chart's README records
+this too.
 
 ## Local development
 
