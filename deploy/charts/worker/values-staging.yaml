@@ -1,0 +1,71 @@
+# worker — staging (namespace `eventa-staging`, devops-infrastructure.md §3.1/§7).
+#
+# §7 makes staging prod-like on purpose: DAST, perf and migration rehearsal only
+# mean anything against production's own configuration. So this file deliberately
+# does NOT lower the log level's cousins — NODE_ENV stays `production`, which
+# keeps eventa-worker's two production refusals armed
+# (src/config/env.validation.ts:148, :182) and keeps the mail path identical to
+# prod's. What differs is the data, the credentials and the ceiling.
+#
+# There is no values-uat.yaml. §7 puts UAT at the same parity as staging and
+# differs only in data sensitivity and who has access, both of which live in the
+# secrets-manager path and in cluster RBAC rather than in this chart — so UAT
+# syncs this file with `/eventa/uat/worker` overridden by its Argo CD
+# Application, rather than a fourth near-copy of it.
+
+environment: staging
+
+image:
+  # ci-cd §4.1: staging auto-promotes after dev is healthy, so the bot moves
+  # this line without a human. See values-prod.yaml for the placeholder.
+  tag: sha-0000000
+
+serviceAccount:
+  # `/eventa/staging/*` only — see values-prod.yaml.
+  annotations: {}
+
+externalSecret:
+  dataFrom:
+    - extract:
+        key: /eventa/staging/worker
+
+config:
+  env:
+    # §7 runs DAST and perf here, both of which read logs to explain a failure.
+    LOG_LEVEL: debug
+    # ci-cd §1.1 sends staging's mail to a sink rather than to attendees, and
+    # §7 forbids raw production PII here — a masked dataset mailed to real
+    # addresses would defeat both. The sink's hostname and credentials arrive at
+    # `/eventa/staging/worker` as SMTP_HOST/USER/PASSWORD, so swapping sinks is a
+    # secrets-manager change and not a chart change.
+    #
+    # NOTE if the sink is moved in-cluster (Mailpit rather than a hosted
+    # trap): `networkPolicy.egress.external` carves out every private range, so
+    # it will NOT reach a pod. Replace it with a `networkPolicy.egress.toPods`
+    # entry naming the sink's namespace and port.
+    EMAIL_FROM: Eventa Staging <no-reply@staging.eventa.co.th>
+    # Links in staging mail should land on staging, so a tester following one
+    # from the sink does not end up acting on production. Same caveat as prod:
+    # confirm the host against DNS (see values-prod.yaml).
+    PUBLIC_WEB_URL: https://staging.eventa.co.th
+
+hpa:
+  # minReplicas stays at the baseline 2. §8 lowers non-prod replica COUNTS, and
+  # this is where that happens — at the ceiling, not the floor. Two reasons the
+  # floor does not move: devops-observability-sre.md §7.2 asks for "≥ 2 replicas
+  # per Deployment" without carving out non-prod, and §3.3's `minAvailable: 50%`
+  # against a floor of 1 rounds up to 1, leaving zero voluntary disruptions — so
+  # every node drain in this namespace would block until somebody deleted the
+  # pod by hand, which is the trap the relay chart has to live with and this one
+  # does not.
+  maxReplicas: 4
+
+global:
+  eventa:
+    network:
+      # PLACEHOLDER — Terraform network module output for staging. See
+      # values-prod.yaml for why one supernet covers all three stores and for
+      # what a wrong value costs.
+      postgresCidrs: ["10.20.8.0/21"]
+      redisCidrs: ["10.20.8.0/21"]
+      rabbitmqCidrs: ["10.20.8.0/21"]

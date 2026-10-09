@@ -1,0 +1,20 @@
+{{/*
+Everything the api shares with the other four workloads, rendered from the
+library chart (devops-infrastructure.md §1.2): ServiceAccount, ConfigMap,
+ExternalSecret, the gated pre-deploy migration Job, Service, Ingress, HPA, PDB
+and the NetworkPolicies.
+
+The Deployment is the one object this include does NOT emit, because
+`deployment.enabled` is false in values.yaml: the api is canary-deployed
+(devops-ci-cd.md §4.2), so its workload object is the Rollout in rollout.yaml.
+That Rollout embeds `eventa-library.podTemplate`, which is the same pod spec the
+other four get — same probes, security context, anti-affinity, telemetry and env
+wiring.
+*/}}
+{{- /*
+  Discarded: `api.values` exists for its side effect here, which is running this
+  chart's own contract checks (templates/_validate.tpl) even on a render where
+  the Rollout is switched off.
+*/ -}}
+{{- $_ := include "api.values" . -}}
+{{- include "eventa-library.workload" . }}

@@ -1,0 +1,33 @@
+# relay — UAT (namespace `eventa-uat`, devops-infrastructure.md §3.1/§7).
+#
+# Business acceptance, promoted by manual approval from product and QA
+# (devops-ci-cd.md §4.1), on curated and masked data. §7 lists four parity
+# environments, not three — without this file the relay simply has no UAT
+# deployment, and the outbox is what carries every confirmation email a
+# stakeholder would be accepting.
+#
+# Like staging it differs from the production baseline only in its references.
+
+image:
+  # Gated promotion: the identical digest that passed staging (devops-ci-cd.md
+  # §3, §4.1). PLACEHOLDER; see values-prod.yaml.
+  tag: sha-0000000
+
+environment: uat
+
+externalSecret:
+  # §5: `/eventa/uat/*`.
+  dataFrom:
+    - extract:
+        key: /eventa/uat/relay
+
+# One CIDR per store: §8 runs non-production on single-node data services.
+# PLACEHOLDERS from the Terraform network module (§1.1).
+networkPolicy:
+  egress:
+    postgres:
+      cidrs:
+        - 10.30.3.0/24
+    rabbitmq:
+      cidrs:
+        - 10.30.3.0/24

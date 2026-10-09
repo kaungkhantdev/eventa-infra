@@ -1,0 +1,101 @@
+# api — dev (namespace `eventa-dev`, devops-infrastructure.md §3.1/§7).
+#
+# §7: "Integrate merged trunk; fast feedback", synthetic data, auto-sync on
+# every merge to main. This is the one environment that departs from the prod
+# baseline in more than its coordinates, and each departure is below with its
+# reason. Everything not mentioned here — probes, resources, PDB, the canary
+# steps, the migration Job — stays identical to prod, because dev's job is to
+# find out whether a change works in the shape production runs it in.
+
+environment: dev
+
+image:
+  # PLACEHOLDER. Bot-managed, and the fastest-moving of the three: §4.1
+  # auto-syncs dev on every merge to `main`.
+  tag: sha-0000000
+
+# §8: non-prod scales down, and dev takes the most of that — it serves
+# engineers, not tenants, and a burst here is one person running a seed script.
+# The floor stays at 1 rather than 0: §6 permits 0 only for an idle PR preview,
+# and a dev api that has scaled to zero makes the next person's first request
+# look like an outage while a pod cold-boots NestJS.
+replicas: 1
+hpa:
+  minReplicas: 1
+  maxReplicas: 3
+
+  # CPU only, and this is the departure that matters most.
+  #
+  # The RPS and p95-latency targets in values.yaml name series that a Prometheus
+  # adapter has to expose. An HPA whose custom metric cannot be fetched does not
+  # fail loudly — it keeps scaling up on the metrics it can read and skips every
+  # scale-down, because the metric it cannot read might be the one asking for
+  # more replicas. In dev that would pin the api at maxReplicas after the first
+  # busy afternoon and keep it there, which is the opposite of what §8 asks of
+  # non-prod. Removing the two entries here means dev autoscales on something
+  # that definitely exists (metrics-server) and nothing that might not.
+  metrics: []
+
+config:
+  env:
+    # §5 names log level as the first example of per-environment config. Debug
+    # is the level that costs nothing here and would log request payloads in an
+    # environment with real attendees.
+    LOG_LEVEL: debug
+    PUBLIC_WEB_URL: https://dev.eventa.dev
+    PUBLIC_API_URL: https://api.dev.eventa.dev
+    CORS_ORIGINS: https://dev.eventa.dev
+    # PLACEHOLDER (object storage).
+    S3_BUCKET: eventa-dev-uploads
+    S3_REGION: REPLACE_WITH_TERRAFORM_OBJECT_STORAGE_REGION
+
+externalSecret:
+  enabled: true
+  dataFrom:
+    - extract:
+        key: /eventa/dev/api
+
+ingress:
+  enabled: true
+  hosts:
+    - host: api.dev.eventa.dev
+      paths:
+        - path: /
+          pathType: Prefix
+
+networkPolicy:
+  egress:
+    # PLACEHOLDER (data subnets) — the network module's data-subnet outputs for
+    # this environment.
+    postgres:
+      enabled: true
+      cidrs:
+        - 10.10.1.0/24
+        - 10.10.2.0/24
+        - 10.10.3.0/24
+    redis:
+      enabled: true
+      cidrs:
+        - 10.10.1.0/24
+        - 10.10.2.0/24
+        - 10.10.3.0/24
+    rabbitmq:
+      enabled: true
+      cidrs:
+        - 10.10.1.0/24
+        - 10.10.2.0/24
+        - 10.10.3.0/24
+
+canary:
+  # The Rollout and its steps stay — dev is where a canary that cannot roll out
+  # at all gets caught, and the steps cost nothing but a few seconds.
+  #
+  # The ANALYSIS is off, for the same reason the custom HPA metrics are: it
+  # queries series the api does not emit yet, through an adapter dev has no
+  # guarantee of running. With gates that cannot be evaluated, Argo Rollouts
+  # records each measurement as inconclusive and pauses — so every merge to
+  # `main` would stall at 10% waiting for a human, and §4.1's auto-sync on merge
+  # would stop being automatic. _validate.tpl refuses this setting for
+  # eventa-prod, where the gate is the point.
+  analysis:
+    enabled: false

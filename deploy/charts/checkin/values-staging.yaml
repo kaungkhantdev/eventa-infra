@@ -1,0 +1,82 @@
+# checkin — eventa-staging (devops-infrastructure.md §3.1, §7).
+#
+# Prod-like on purpose: §7 makes this the environment for DAST, perf checks and
+# migration rehearsal, and devops-ci-cd.md §4.1 auto-promotes into it once dev
+# is healthy. So this file changes as little as possible from the prod baseline
+# in values.yaml — the autoscaler keeps all three of §3.2's signals, including
+# the two custom metrics, precisely so that a missing Prometheus adapter rule is
+# discovered here instead of during a real gate opening.
+#
+# What differs is sizing (§7: environments differ in "sizing, replica counts,
+# retention, and data sensitivity"; §8 keeps non-prod smaller) and the
+# coordinates.
+
+environment: staging
+
+image:
+  # Auto-promoted: devops-ci-cd.md §4.1 bumps this to the digest dev ran, with
+  # no approval gate. Placeholder until the CI bot owns the line.
+  tag: sha-0000000
+
+hpa:
+  # A floor of 1 rather than prod's 2. §6's "never 0 for prod services" does not
+  # bind here, and a perf run that starts from one pod exercises the scale-out
+  # path that matters — starting at the prod floor would hide how long the first
+  # scale-out actually takes.
+  minReplicas: 1
+  # A ceiling that fits a staging node pool. It is low enough to be reached in a
+  # perf run, which is the point: a ceiling that is never hit is a ceiling
+  # nobody has tested.
+  maxReplicas: 5
+  behavior:
+    scaleUp:
+      policies:
+        # Scaled down with the ceiling. Prod's "8 pods at a time" would clear
+        # staging's whole range in one step and measure nothing.
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+        - type: Pods
+          value: 2
+          periodSeconds: 30
+
+config:
+  env:
+    # Debug for the DAST and perf runs §7 puts here — the request-level detail
+    # is what makes a failed scan traceable, and there is no real PII in this
+    # environment's logs to be careful with (§7: anonymised, no raw prod PII).
+    LOG_LEVEL: debug
+    # Placeholders from the object-storage module (§1.1, §4) — see values-prod.yaml
+    # for why these are not plausible-looking values.
+    S3_BUCKET: REPLACE_WITH_UPLOADS_BUCKET
+    S3_REGION: REPLACE_WITH_STORAGE_REGION
+    PUBLIC_WEB_URL: https://staging.eventa.co.th
+    PUBLIC_API_URL: https://api.staging.eventa.co.th
+    CORS_ORIGINS: https://staging.eventa.co.th
+
+externalSecret:
+  # §5's per-environment path. The IAM grant behind it is scoped to this
+  # namespace, which is what stops a staging pod reading /eventa/prod/*.
+  dataFrom:
+    - extract:
+        key: /eventa/staging/api
+
+ingress:
+  hosts:
+    - host: checkin.staging.eventa.co.th
+      paths:
+        - path: /api/v1
+          pathType: Prefix
+
+# PLACEHOLDERS, from the Terraform network module's output for this environment
+# (§1.1) — see values-prod.yaml. Staging's data subnets are separate ranges
+# because §7's parity is "same modules, different tfvars", not a shared network.
+global:
+  eventa:
+    network:
+      postgresCidrs:
+        - 10.30.1.0/24
+      redisCidrs:
+        - 10.30.3.0/24
+      rabbitmqCidrs:
+        - 10.30.5.0/24

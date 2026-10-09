@@ -1,0 +1,12 @@
+# What `helm package` leaves out. The per-environment values files stay IN the
+# package on purpose: Argo CD renders this chart with `-f values-<env>.yaml`
+# (devops-infrastructure.md §1.2), and a package that does not carry them can
+# only be rendered from the repository working tree.
+.DS_Store
+.git/
+.gitignore
+*.swp
+*.bak
+*.tmp
+*.orig
+*~

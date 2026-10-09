@@ -1,0 +1,31 @@
+# dev's root: the Application that owns the five service Applications in
+# `argocd/environments/dev`.
+#
+# devops-infrastructure.md §7 and devops-ci-cd.md §4.1 make dev the one
+# environment with no gate at all — "auto on merge to main" — so both this root
+# and all five children below it sync themselves.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: eventa-dev
+  namespace: platform
+spec:
+  project: platform
+
+  source:
+    repoURL: https://github.com/kaungkhantdev/eventa-infra.git
+    targetRevision: main
+    path: argocd/environments/dev
+    directory:
+      recurse: false
+
+  destination:
+    server: https://kubernetes.default.svc
+    # The Application objects live in Argo CD's namespace (§3.1). The workloads
+    # they describe land in `eventa-dev`, which each child names itself.
+    namespace: platform
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

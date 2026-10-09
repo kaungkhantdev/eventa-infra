@@ -1,0 +1,32 @@
+apiVersion: v2
+name: web
+# devops-infrastructure.md §1.2 puts one chart per service under
+# deploy/charts/, each composing the shared library rather than restating it.
+type: application
+version: 0.1.0
+description: React SSR public pages for Eventa — Deployment, Service, Ingress, HPA, PDB and NetworkPolicy, composed from the shared eventa-library chart.
+keywords:
+  - eventa
+  - web
+  - ssr
+home: https://github.com/eventa/eventa-infra
+sources:
+  - https://github.com/eventa/eventa-infra
+maintainers:
+  - name: Eventa Platform Squad
+# No `appVersion`. The deployed version of this service is the immutable SHA tag
+# in values-<env>.yaml (devops-ci-cd.md §3), which the promotion bot moves per
+# environment; an appVersion here would be a second copy of it that nothing
+# updates. The library already derives app.kubernetes.io/version from the image
+# reference for exactly this reason.
+dependencies:
+  - name: eventa-library
+    version: 0.1.0
+    repository: "file://../_library"
+annotations:
+  # The documents this chart implements. Anything below that looks like a free
+  # design choice is not one — read these before changing a value.
+  eventa.io/spec: |
+    eventa-docs/07-deployment/devops-infrastructure.md §1.2, §3.1, §3.2, §3.3, §5, §6, §7, §8
+    eventa-docs/07-deployment/devops-ci-cd.md §3, §4.1, §4.2, §4.3
+    eventa-docs/08-maintenance/devops-observability-sre.md §1, §2

@@ -1,0 +1,30 @@
+# web — UAT overlay. Namespace `eventa-uat` (devops-infrastructure.md §3.1):
+# business and stakeholder acceptance, curated realistic data, masked, reached
+# by gated promotion (§7, devops-ci-cd.md §4.1).
+#
+# The brief for this chart asked for dev, staging and prod overlays. UAT is here
+# because §3.1 and §7 define it as one of the four parity environments: without
+# this file the chart cannot be deployed to `eventa-uat` at all, and an Argo CD
+# Application would have nothing to point at.
+
+environment: uat
+
+image:
+  # Bumped by the gated promotion PR, not by the bot (devops-ci-cd.md §4.1).
+  tag: sha-0000000
+
+# Two replicas rather than dev's one: a stakeholder acceptance session should
+# survive a single pod restart or a node drain, which §3.3's `minAvailable: 50%`
+# budget cannot protect at a floor of one. The ceiling is low because UAT is for
+# acceptance, not for load — §7 puts the perf checks in staging, and §8 asks
+# non-prod to stay small.
+hpa:
+  minReplicas: 2
+  maxReplicas: 6
+
+ingress:
+  hosts:
+    - host: uat.eventa.dev
+      paths:
+        - path: /
+          pathType: Prefix

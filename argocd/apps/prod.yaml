@@ -1,0 +1,44 @@
+# production's root: the Application that owns the five service Applications in
+# `argocd/environments/prod`.
+#
+# This root syncs itself automatically and that is not a hole in the production
+# gate. It renders Application objects into the `platform` namespace, nothing
+# into `eventa-prod`. Each of the five children it creates has no
+# `syncPolicy.automated` of its own, so a merged promotion makes them report
+# OutOfSync and stop there, waiting for the release manager's sync that
+# devops-ci-cd.md §4.1 requires. Automating this root is what keeps "adding a
+# service or environment is a Git change" (§1.3) true for production too,
+# without giving production an automated path to the cluster.
+#
+# The consequence is in §1.3's other sentence: "self-heal + drift detection:
+# manual cluster edits are reverted to match Git." Argo CD cannot separate
+# those two — `selfHeal` only exists inside `automated`, and turning it on for
+# a production child would also auto-apply the next promotion. §1.3 and §4.1
+# both state the gated sync twice and in more specific words, so the gate wins
+# and production keeps drift *detection* without automatic drift *reversion*: a
+# manual edit in `eventa-prod` shows the Application OutOfSync and is undone by
+# a human pressing sync. README.md records this as the one place the Argo CD
+# layer cannot satisfy §1.3 in full.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: eventa-prod
+  namespace: platform
+spec:
+  project: platform
+
+  source:
+    repoURL: https://github.com/kaungkhantdev/eventa-infra.git
+    targetRevision: main
+    path: argocd/environments/prod
+    directory:
+      recurse: false
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: platform
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

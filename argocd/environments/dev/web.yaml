@@ -1,0 +1,42 @@
+# web — the React SSR public site (devops-infrastructure.md §3.2).
+#
+# This is the only chart whose rendered output depends on another service's
+# in-cluster name: `web` reaches the api at `http://api/api/v1`
+# (deploy/charts/web/values.yaml:120), and that host is the api release's
+# Service name. The `releaseName` fields in this directory are what hold it
+# steady.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  # The Application name carries the environment because all four environments'
+  # Applications live in the one `platform` namespace (§3.1); the Helm release
+  # name below deliberately does not.
+  name: eventa-dev-web
+  namespace: platform
+spec:
+  project: eventa-dev
+
+  source:
+    repoURL: https://github.com/kaungkhantdev/eventa-infra.git
+    targetRevision: main
+    path: deploy/charts/web
+    helm:
+      # Not the Application name — see ../../README.md, "Release names".
+      releaseName: web
+      # Helm always reads the chart's own values.yaml as the base, so only the
+      # overlay is listed. devops-infrastructure.md §1.2 makes this pair the
+      # unit of deployment, and the image tag inside the overlay is what a
+      # promotion moves — which is why there are no `helm.parameters` here.
+      valueFiles:
+        - values-dev.yaml
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: eventa-dev
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

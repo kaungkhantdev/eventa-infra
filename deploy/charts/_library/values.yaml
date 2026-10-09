@@ -1,0 +1,17 @@
+# This file is intentionally almost empty, and that is not an oversight.
+#
+# Helm coalesces a dependency's values.yaml under the dependency's own key, so
+# anything written here would arrive as `.Values.eventa-library.*` in the parent
+# chart. The library's templates are included with the parent's root context, so
+# they read `.Values.*` — the parent's top-level values. Defaults placed here
+# would therefore never be read by anything, while still looking authoritative.
+#
+# The real defaults are the YAML document in `templates/_defaults.tpl`, merged
+# over the parent's values by the `eventa-library.values` template. That is the
+# single source of truth for the contract; `values.contract.schema.json`
+# describes it and README.md documents it.
+#
+# Keep this file present but empty: a `helm lint` INFO about a missing
+# values.yaml is noise, and an empty file is the clearest place to leave this
+# warning for whoever goes looking for the defaults here first.
+{}

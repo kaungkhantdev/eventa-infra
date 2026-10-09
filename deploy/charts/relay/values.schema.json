@@ -1,0 +1,1115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://eventa.io/schemas/deploy/charts/relay/values.schema.json",
+  "title": "Eventa relay chart values",
+  "description": "The eventa-library values contract as the relay chart is written against it. This is a copy of _library/values.contract.schema.json, which the library's README asks each service chart to take as its own values.schema.json so that helm lint and helm template validate values before anything renders. It diverges from that copy in exactly one place, documented inline: `ports` allows the empty list, because the relay binds no socket. Defaults live in _library/templates/_defaults.tpl and the render-time invariants JSON Schema cannot express live in _library/templates/_validate.tpl and this chart's templates/_guard.tpl.",
+  "type": "object",
+  "required": [
+    "component",
+    "image",
+    "resources"
+  ],
+  "properties": {
+    "component": {
+      "description": "The workload's role. Becomes app.kubernetes.io/component and is part of the Deployment selector, which is what separates the `api` and `checkin` pools that run the same image (devops-infrastructure.md \u00a73.2).",
+      "enum": [
+        "web",
+        "api",
+        "checkin",
+        "worker",
+        "relay"
+      ]
+    },
+    "nameOverride": {
+      "type": "string"
+    },
+    "fullnameOverride": {
+      "type": "string"
+    },
+    "partOf": {
+      "type": "string"
+    },
+    "environment": {
+      "description": "dev | staging | uat | prod | preview-<pr> (devops-infrastructure.md \u00a77). Defaults to the release namespace.",
+      "type": "string"
+    },
+    "image": {
+      "type": "object",
+      "required": [
+        "repository"
+      ],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tag": {
+          "description": "An immutable git-SHA tag; never `latest` or a branch alias (devops-ci-cd.md \u00a73).",
+          "type": "string",
+          "not": {
+            "enum": [
+              "latest",
+              "main",
+              "staging"
+            ]
+          }
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^$|^sha256:[a-f0-9]{64}$"
+        },
+        "pullPolicy": {
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "tag"
+          ],
+          "properties": {
+            "tag": {
+              "minLength": 1
+            }
+          }
+        },
+        {
+          "required": [
+            "digest"
+          ],
+          "properties": {
+            "digest": {
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "commonLabels": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "commonAnnotations": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "deployment": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Set false for a chart that renders its own workload object \u2014 the api's Argo Rollout (devops-ci-cd.md \u00a74.2) \u2014 and embeds eventa-library.podTemplate instead.",
+          "type": "boolean"
+        },
+        "annotations": {
+          "type": "object"
+        },
+        "labels": {
+          "type": "object"
+        }
+      }
+    },
+    "podAnnotations": {
+      "type": "object"
+    },
+    "podLabels": {
+      "type": "object"
+    },
+    "replicas": {
+      "description": "Prod minimums: web 3, api 3, checkin 2, worker 2 (devops-infrastructure.md \u00a73.2). Ignored when hpa.enabled, and refused outright above 1 when singleton.enabled.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "revisionHistoryLimit": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "progressDeadlineSeconds": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "terminationGracePeriodSeconds": {
+      "description": "Must exceed the longest message handler for worker and relay, which drain on SIGTERM (devops-ci-cd.md \u00a75.3).",
+      "type": "integer",
+      "minimum": 0
+    },
+    "updateStrategy": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "enum": [
+            "RollingUpdate",
+            "Recreate"
+          ]
+        },
+        "rollingUpdate": {
+          "type": "object",
+          "properties": {
+            "maxSurge": {
+              "type": [
+                "integer",
+                "string"
+              ]
+            },
+            "maxUnavailable": {
+              "type": [
+                "integer",
+                "string"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "singleton": {
+      "description": "Pins the workload to one replica, refuses an HPA, and forces maxSurge=0/maxUnavailable=1. Only `relay` sets this, and only until FOR UPDATE SKIP LOCKED lands in eventa-relay/src/relay/outbox-reader.repository.ts:25.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "string"
+        }
+      }
+    },
+    "argocd": {
+      "type": "object",
+      "properties": {
+        "syncWave": {
+          "description": "devops-ci-cd.md \u00a74.3 fixes the order: 1 migration Job, 2 api/worker/relay, 3 web.",
+          "type": [
+            "string",
+            "integer"
+          ]
+        }
+      }
+    },
+    "command": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "args": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "lifecycle": {
+      "type": "object"
+    },
+    "resources": {
+      "description": "Required on both sides. devops-infrastructure.md \u00a73.3: web 250m/1000m + 512Mi/1Gi; api and checkin 500m/2000m + 512Mi/1Gi; worker 250m/1000m + 512Mi/1Gi; relay 100m/500m + 256Mi/512Mi.",
+      "type": "object",
+      "required": [
+        "requests",
+        "limits"
+      ],
+      "properties": {
+        "requests": {
+          "type": "object",
+          "required": [
+            "cpu",
+            "memory"
+          ],
+          "properties": {
+            "cpu": {
+              "type": [
+                "string",
+                "number"
+              ],
+              "minLength": 1
+            },
+            "memory": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "required": [
+            "cpu",
+            "memory"
+          ],
+          "properties": {
+            "cpu": {
+              "type": [
+                "string",
+                "number"
+              ],
+              "minLength": 1
+            },
+            "memory": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "podSecurityContext": {
+      "type": "object"
+    },
+    "securityContext": {
+      "type": "object"
+    },
+    "tmpDir": {
+      "description": "A writable /tmp, needed because the root filesystem is read-only by default.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "mountPath": {
+          "type": "string"
+        },
+        "medium": {
+          "type": "string"
+        },
+        "sizeLimit": {
+          "type": "string"
+        }
+      }
+    },
+    "extraVolumes": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "extraVolumeMounts": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "serviceAccount": {
+      "type": "object",
+      "properties": {
+        "create": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "annotations": {
+          "description": "Where the cloud's workload-identity / IRSA binding goes (devops-infrastructure.md \u00a75, \u00a71.1). Provider-specific, so it comes from values-<env>.yaml.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "automountServiceAccountToken": {
+          "type": "boolean"
+        }
+      }
+    },
+    "antiAffinity": {
+      "description": "devops-infrastructure.md \u00a73.3: anti-affinity spreads replicas across AZs.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "type": {
+          "description": "`soft` (preferred) keeps a scale-out schedulable when the replica count exceeds the AZ count; `hard` caps replicas at one per zone.",
+          "enum": [
+            "soft",
+            "hard"
+          ]
+        },
+        "zoneTopologyKey": {
+          "type": "string"
+        },
+        "nodeTopologyKey": {
+          "type": "string"
+        }
+      }
+    },
+    "affinity": {
+      "type": "object"
+    },
+    "topologySpreadConstraints": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "nodeSelector": {
+      "type": "object"
+    },
+    "tolerations": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "priorityClassName": {
+      "type": "string"
+    },
+    "ports": {
+      "description": "Named container ports. Probes, the Service and the metrics scrape all address them by name. THE ONE DIVERGENCE from _library/values.contract.schema.json, which sets minItems: 1: the relay binds no socket at all. eventa-relay/src/main.ts:24 builds an application context rather than an HTTP server, and there is no listen, controller or port anywhere in eventa-relay/src, so the honest value is the empty list and the contract's floor of one port cannot hold here.",
+      "type": "array",
+      "minItems": 0,
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "containerPort"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 15
+          },
+          "containerPort": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535
+          },
+          "protocol": {
+            "enum": [
+              "TCP",
+              "UDP",
+              "SCTP"
+            ]
+          }
+        }
+      }
+    },
+    "service": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "type": {
+          "description": "ClusterIP only: the single ingress into the VPC is the load balancer Terraform owns (devops-infrastructure.md \u00a72).",
+          "enum": [
+            "ClusterIP",
+            "None"
+          ]
+        },
+        "annotations": {
+          "type": "object"
+        },
+        "labels": {
+          "type": "object"
+        },
+        "clusterIP": {
+          "type": "string"
+        },
+        "ports": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "metrics": {
+      "description": "All five workloads expose /metrics (devops-observability-sre.md \u00a71).",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "port": {
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "path": {
+          "type": "string"
+        },
+        "podAnnotations": {
+          "type": "boolean"
+        }
+      }
+    },
+    "probes": {
+      "description": "devops-infrastructure.md \u00a73.3. `type` selects the single handler a Kubernetes probe may carry.",
+      "type": "object",
+      "properties": {
+        "readiness": {
+          "$ref": "#/$defs/probe"
+        },
+        "liveness": {
+          "$ref": "#/$defs/probe"
+        },
+        "startup": {
+          "$ref": "#/$defs/probe"
+        }
+      }
+    },
+    "config": {
+      "description": "Non-secret config only; renders to a ConfigMap that is committed to Git (devops-infrastructure.md \u00a75).",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          }
+        },
+        "annotations": {
+          "type": "object"
+        },
+        "allowSecretLookingKeys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "extraEnv": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "extraEnvFrom": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "telemetry": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "serviceName": {
+          "type": "string"
+        },
+        "extraResourceAttributes": {
+          "type": "object"
+        }
+      }
+    },
+    "externalSecret": {
+      "description": "The only path a secret takes into a pod (devops-infrastructure.md \u00a75).",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "apiVersion": {
+          "type": "string"
+        },
+        "refreshInterval": {
+          "type": "string"
+        },
+        "secretStoreRef": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "SecretStore",
+                "ClusterSecretStore"
+              ]
+            }
+          }
+        },
+        "target": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "creationPolicy": {
+              "enum": [
+                "Owner",
+                "Orphan",
+                "Merge",
+                "None"
+              ]
+            },
+            "deletionPolicy": {
+              "enum": [
+                "Delete",
+                "Merge",
+                "Retain"
+              ]
+            },
+            "template": {
+              "type": "object"
+            }
+          }
+        },
+        "dataFrom": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "data": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "injectAsEnv": {
+          "type": "boolean"
+        }
+      }
+    },
+    "hpa": {
+      "description": "Signals per workload are fixed in devops-infrastructure.md \u00a73.2. relay has no HPA.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "minReplicas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxReplicas": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "cpu": {
+          "type": "object",
+          "properties": {
+            "targetAverageUtilization": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 1,
+              "maximum": 100
+            }
+          }
+        },
+        "memory": {
+          "type": "object",
+          "properties": {
+            "targetAverageUtilization": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 1,
+              "maximum": 100
+            }
+          }
+        },
+        "metrics": {
+          "description": "Passed through to autoscaling/v2 verbatim: RPS, p95 latency and queue depth are Pods/Object/External metrics whose names belong to the environment's Prometheus adapter.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "type"
+            ]
+          }
+        },
+        "scaleTargetRef": {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          }
+        },
+        "behavior": {
+          "type": "object"
+        },
+        "annotations": {
+          "type": "object"
+        }
+      }
+    },
+    "pdb": {
+      "description": "devops-infrastructure.md \u00a73.3: minAvailable 50% per service; relay uses 1. Exactly one of the two fields.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "minAvailable": {
+          "type": [
+            "integer",
+            "string",
+            "null"
+          ]
+        },
+        "maxUnavailable": {
+          "type": [
+            "integer",
+            "string",
+            "null"
+          ]
+        },
+        "annotations": {
+          "type": "object"
+        }
+      }
+    },
+    "networkPolicy": {
+      "description": "devops-infrastructure.md \u00a73.3: default-deny per namespace plus the declared allows.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "annotations": {
+          "type": "object"
+        },
+        "defaultDeny": {
+          "description": "Namespace-wide. Exactly one release per namespace should enable it.",
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            }
+          }
+        },
+        "ingress": {
+          "type": "object",
+          "properties": {
+            "fromIngressController": {
+              "$ref": "#/$defs/podPeerToggle"
+            },
+            "fromMetricsScraper": {
+              "$ref": "#/$defs/podPeerToggle"
+            },
+            "fromPods": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/podPeer"
+              }
+            },
+            "extra": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "egress": {
+          "type": "object",
+          "properties": {
+            "dns": {
+              "$ref": "#/$defs/podPeerToggle"
+            },
+            "postgres": {
+              "$ref": "#/$defs/cidrPeer"
+            },
+            "redis": {
+              "$ref": "#/$defs/cidrPeer"
+            },
+            "rabbitmq": {
+              "$ref": "#/$defs/cidrPeer"
+            },
+            "external": {
+              "description": "Stripe/PromptPay/comms via NAT. Plain NetworkPolicy cannot name a host, so this is the internet on these ports minus the private ranges.",
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "ports": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/port"
+                  }
+                },
+                "exceptCidrs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "toPods": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/podPeer"
+              }
+            },
+            "extra": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "global": {
+      "description": "Set once by an umbrella chart instead of repeating the data-subnet CIDRs in five service charts.",
+      "type": "object",
+      "properties": {
+        "eventa": {
+          "type": "object",
+          "properties": {
+            "network": {
+              "type": "object",
+              "properties": {
+                "postgresCidrs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "redisCidrs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "rabbitmqCidrs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "ingress": {
+      "description": "web, api and checkin only. The edge in front of it is CDN \u2192 WAF \u2192 load balancer (devops-infrastructure.md \u00a72).",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "className": {
+          "type": "string"
+        },
+        "annotations": {
+          "type": "object"
+        },
+        "hosts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "host",
+              "paths"
+            ],
+            "properties": {
+              "host": {
+                "type": "string",
+                "minLength": 1
+              },
+              "paths": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "path"
+                  ],
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "pathType": {
+                      "enum": [
+                        "Prefix",
+                        "Exact",
+                        "ImplementationSpecific"
+                      ]
+                    },
+                    "port": {
+                      "type": [
+                        "string",
+                        "integer"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tls": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "migrationJob": {
+      "description": "The gated pre-deploy Job (devops-ci-cd.md \u00a75.1). Only the api chart enables it \u2014 eventa-api owns every migration.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "command": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "backoffLimit": {
+          "description": "0, because migrations are forward-only and a retry would re-run against a half-changed schema.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 0
+        },
+        "activeDeadlineSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ttlSecondsAfterFinished": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "annotations": {
+          "type": "object"
+        },
+        "podAnnotations": {
+          "type": "object"
+        },
+        "labels": {
+          "type": "object"
+        },
+        "resources": {
+          "type": "object"
+        },
+        "extraEnv": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "port": {
+      "type": "object",
+      "required": [
+        "port"
+      ],
+      "properties": {
+        "port": {
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
+        "protocol": {
+          "enum": [
+            "TCP",
+            "UDP",
+            "SCTP"
+          ]
+        }
+      }
+    },
+    "probe": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "type": {
+          "description": "`exec` or `tcp` for worker and relay, which serve no HTTP of their own (devops-infrastructure.md \u00a73.3).",
+          "enum": [
+            "http",
+            "exec",
+            "tcp"
+          ]
+        },
+        "http": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "port": {
+              "type": [
+                "string",
+                "integer"
+              ]
+            },
+            "scheme": {
+              "enum": [
+                "HTTP",
+                "HTTPS"
+              ]
+            },
+            "httpHeaders": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "exec": {
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "tcp": {
+          "type": "object",
+          "properties": {
+            "port": {
+              "type": [
+                "string",
+                "integer"
+              ]
+            }
+          }
+        },
+        "initialDelaySeconds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "periodSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "failureThreshold": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "successThreshold": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "podPeer": {
+      "type": "object",
+      "properties": {
+        "namespace": {
+          "type": "string"
+        },
+        "namespaceSelector": {
+          "type": "object"
+        },
+        "podSelector": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "ports": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/port"
+          }
+        }
+      }
+    },
+    "podPeerToggle": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "namespace": {
+          "type": "string"
+        },
+        "namespaceSelector": {
+          "type": "object"
+        },
+        "podSelector": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "ports": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/port"
+          }
+        }
+      }
+    },
+    "cidrPeer": {
+      "description": "A managed data service in a private data subnet, so the allow is an ipBlock whose CIDR comes from the Terraform network module. An empty list is a render error, not a default: a rule with no peer allows everything.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "cidrs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "ports": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/port"
+          }
+        }
+      }
+    }
+  }
+}

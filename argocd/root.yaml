@@ -1,0 +1,69 @@
+# The App-of-Apps root.
+#
+# devops-infrastructure.md §1.3 asks for "a root Argo `Application` [that]
+# points at child apps (one per service per env), so adding a service or
+# environment is a Git change". This is that root, and it is the only
+# Application in this repository that a human ever applies:
+#
+#     kubectl apply -f argocd/projects/platform.yaml
+#     kubectl apply -f argocd/root.yaml
+#
+# Two commands rather than one because an Application is rejected if its
+# project does not exist, and the project that holds the GitOps machinery
+# cannot be created by an Application inside it. Both files come out of Git and
+# both are idempotent, so this is still "no console click is a source of truth"
+# (§1 preamble) — and after the first apply the `eventa-projects` Application
+# adopts projects/platform.yaml and reconciles it like everything else.
+#
+# What this root does NOT contain is any image reference. Promotion is a tag
+# bump in `deploy/charts/<service>/values-<env>.yaml` (§1.2, devops-ci-cd.md
+# §4.1), so there is nothing in argocd/ for a release to touch and nothing here
+# that can disagree with the values file about what is deployed.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: eventa-root
+  namespace: platform
+spec:
+  project: platform
+
+  source:
+    repoURL: https://github.com/kaungkhantdev/eventa-infra.git
+    # Trunk. devops-ci-cd.md §1 keeps one long-lived branch that is always
+    # releasable, and §4.1 makes each environment "a folder of values in the
+    # GitOps repo" rather than a branch — so every environment reads the same
+    # revision and differs only in which `values-<env>.yaml` it loads. Pinning
+    # prod to a config-repo tag instead would make a promotion two moves (the
+    # image tag and the config tag) where §1.2 specifies one.
+    targetRevision: main
+    path: argocd/apps
+    directory:
+      # Only the files directly in `argocd/apps`. Recursing would make this
+      # root re-render `argocd/projects` and `argocd/environments` as well,
+      # which the Applications in `argocd/apps` already own — two Applications
+      # claiming the same object is the one failure mode App-of-Apps has.
+      recurse: false
+
+  destination:
+    server: https://kubernetes.default.svc
+    # Argo CD's own namespace per §3.1, which is where Application objects have
+    # to be created for the controller to read them.
+    namespace: platform
+
+  syncPolicy:
+    # Self-heal and drift detection are on, as §1.3 requires, and they are safe
+    # to have on here even though production's own sync is gated: this
+    # Application creates Application objects, not workloads. Reconciling it
+    # can add or correct the *definition* of the production apps; it cannot
+    # move production, because each production child below has no automated
+    # sync of its own.
+    automated:
+      # An environment or a service is removed by deleting its file, so prune
+      # has to be on for §1.3's "adding a service or environment is a Git
+      # change" to work in both directions. Note that these child Applications
+      # carry no `resources-finalizer.argocd.argoproj.io`: pruning one stops
+      # Argo CD managing that environment's workloads and leaves them running,
+      # which is the conservative half of the trade. Deleting the workloads is
+      # then a deliberate act. See README.md.
+      prune: true
+      selfHeal: true

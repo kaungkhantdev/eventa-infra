@@ -1,0 +1,78 @@
+# checkin — eventa-dev (devops-infrastructure.md §3.1, §7).
+#
+# The continuous-integration target: auto-synced on every merge to main (§7),
+# synthetic data, no real PII. It proves the manifests and the boot path, not
+# the autoscaling — there is no door rush in dev to scale for, and §8 keeps
+# non-prod small.
+
+environment: dev
+
+image:
+  # Rewritten on every merge to main by the CI bot (devops-ci-cd.md §4.1), so
+  # this line is the one place in the chart that is expected to churn.
+  tag: sha-0000000
+
+hpa:
+  # Off here, which is the one real difference from the prod baseline. Two
+  # reasons, and the second is the important one:
+  #
+  #   1. Nothing in dev generates a door-scan surge, so an autoscaler would only
+  #      ever hold the floor.
+  #   2. The prod HPA reads two custom metrics that no Prometheus adapter serves
+  #      yet (see values.yaml). An HPA that cannot read a metric reports
+  #      ScalingActive=False and refuses to scale in, so in the environment that
+  #      syncs on every merge it would quietly park at its high-water mark and
+  #      make dev the most expensive thing in the cluster.
+  #
+  # When the adapter rule and the app-side metrics exist, dev is the right place
+  # to turn this on first with a ceiling of 3.
+  enabled: false
+
+# Two, not one, and deliberately not fewer. §3.3's PodDisruptionBudget is
+# `minAvailable: 50%`, and 50% of a single replica rounds UP to 1 — which leaves
+# zero allowed disruptions and blocks `kubectl drain` on the node holding it.
+# Dev is the cluster whose nodes are recycled most often, so one replica would
+# turn every routine node roll into a manual pod delete. Stated here rather than
+# inherited so that a change to the library's default cannot silently take dev
+# to one.
+replicas: 2
+
+config:
+  env:
+    # Everything the api logs about a request, because dev is where a failing
+    # scan is diagnosed, and §7 puts no real PII in this environment's logs.
+    LOG_LEVEL: debug
+    # Placeholders from the object-storage module (§1.1, §4) — see
+    # values-prod.yaml for why these are not plausible-looking values.
+    S3_BUCKET: REPLACE_WITH_UPLOADS_BUCKET
+    S3_REGION: REPLACE_WITH_STORAGE_REGION
+    PUBLIC_WEB_URL: https://dev.eventa.co.th
+    PUBLIC_API_URL: https://api.dev.eventa.co.th
+    CORS_ORIGINS: https://dev.eventa.co.th
+
+externalSecret:
+  # §5's per-environment path, and the reason the paths are per-environment: the
+  # IAM grant behind /eventa/dev/* is scoped to this namespace, so a dev pod
+  # cannot read prod credentials even if somebody pastes the prod path here.
+  dataFrom:
+    - extract:
+        key: /eventa/dev/api
+
+ingress:
+  hosts:
+    - host: checkin.dev.eventa.co.th
+      paths:
+        - path: /api/v1
+          pathType: Prefix
+
+# PLACEHOLDERS, from the Terraform network module's output for this environment
+# (§1.1) — see values-prod.yaml.
+global:
+  eventa:
+    network:
+      postgresCidrs:
+        - 10.10.1.0/24
+      redisCidrs:
+        - 10.10.3.0/24
+      rabbitmqCidrs:
+        - 10.10.5.0/24

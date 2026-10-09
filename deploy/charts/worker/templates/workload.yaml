@@ -1,0 +1,12 @@
+{{/*
+The whole chart.
+
+Every object — ServiceAccount, ConfigMap, ExternalSecret, Deployment, HPA, PDB
+and NetworkPolicy — comes from the shared library, which is what
+devops-infrastructure.md §1.2 asks for: the five services differ in values, not
+in template files, so a change to a probe or a disruption budget happens once.
+The worker's own guards run first, because a render that is going to fail should
+fail before it has emitted half a manifest.
+*/}}
+{{- include "eventa-worker.guards" . -}}
+{{- include "eventa-library.workload" . }}

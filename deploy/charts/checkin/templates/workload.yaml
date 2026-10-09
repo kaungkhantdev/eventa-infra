@@ -1,0 +1,22 @@
+{{/*
+The whole chart.
+
+Every object — ServiceAccount, ConfigMap, ExternalSecret, Deployment, Service,
+Ingress, HorizontalPodAutoscaler, PodDisruptionBudget and NetworkPolicy — comes
+from the shared library chart, which is what devops-infrastructure.md §1.2 asks
+for: "shared templates (probes, PDB, NetworkPolicy, ExternalSecret, HPA) live in
+a common library chart to keep the four services consistent". A probe or a
+disruption budget that needs to change changes in one place for all five
+workloads, so this chart holds values and guards and no object templates at all.
+
+No migration Job is rendered, because `migrationJob.enabled` stays at the
+library's default of false and `checkin.guards` refuses to render if anybody
+turns it on. eventa-api owns every migration and the api chart owns the single
+wave-1 PreSync Job (devops-ci-cd.md §5.1).
+
+The guards run first so that a violation reports itself rather than appearing as
+a rendered manifest that applies cleanly — see _guards.tpl for what each one
+catches and why it is not merely a style rule.
+*/}}
+{{- include "checkin.guards" . -}}
+{{- include "eventa-library.workload" . }}

@@ -1,0 +1,34 @@
+apiVersion: v2
+name: api
+# The core API: the NestJS modular monolith that owns checkout, payments and
+# auth. devops-ci-cd.md §4.2 singles it out as "the integrity-critical,
+# highest-blast-radius surface", which is why this is the one chart of the five
+# that deploys progressively instead of rolling.
+type: application
+version: 0.1.0
+description: The Eventa core API — canary-deployed Argo Rollout, HPA on CPU/RPS/p95 latency, and the gated pre-deploy migration Job that every other workload's schema depends on.
+keywords:
+  - eventa
+  - api
+home: https://github.com/eventa/eventa-infra
+sources:
+  - https://github.com/eventa/eventa-infra
+maintainers:
+  - name: Eventa Platform Squad
+dependencies:
+  # Everything the five workloads have in common — Deployment skeleton, probes,
+  # HPA, PDB, NetworkPolicy, ExternalSecret, migration Job — lives in the
+  # library chart (devops-infrastructure.md §1.2). This chart adds only what is
+  # specific to the api: the Rollout, its canary analysis, and the api's own
+  # values. `eventa-library.podTemplate` is what keeps the Rollout's pods
+  # identical to the other four workloads' pods.
+  - name: eventa-library
+    version: 0.1.0
+    repository: "file://../_library"
+annotations:
+  # The documents this chart implements. Nothing here was designed in this repo;
+  # read these before changing a value.
+  eventa.io/spec: |
+    eventa-docs/07-deployment/devops-infrastructure.md §1.2, §3.1, §3.2, §3.3, §5, §6, §7
+    eventa-docs/07-deployment/devops-ci-cd.md §4.2, §4.3, §5.1, §5.2, §8
+    eventa-docs/08-maintenance/devops-observability-sre.md §2, §3

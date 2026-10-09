@@ -1,0 +1,58 @@
+# The project the GitOps machinery itself runs in.
+#
+# devops-infrastructure.md §3.1 puts "Argo CD, External Secrets, ingress
+# controller, observability agents" in the `platform` namespace, which is why
+# every Application, ApplicationSet and AppProject in this directory tree is
+# created there rather than in a namespace called `argocd`: Argo CD only reads
+# Application objects out of its own namespace, and §3.1 says that namespace is
+# `platform`.
+#
+# This file is the one exception to "Argo CD applies everything": it has to
+# exist before the root Application that references it can be admitted, so a
+# human applies it once at bootstrap together with ../root.yaml. After that the
+# `eventa-projects` Application adopts it and reconciles it like any other
+# manifest — see ../README.md for the two bootstrap commands.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: platform
+  namespace: platform
+spec:
+  description: Argo CD's own objects — the App-of-Apps root, the per-environment root Applications, and the AppProjects.
+
+  # One repository, because devops-infrastructure.md §1.3 makes this repo the
+  # single source of desired state. Anything outside it is not deployable by
+  # definition, and an AppProject is where that stops being a convention.
+  #
+  # Taken from `git remote -v` and rewritten to the https form the Argo CD
+  # repo-server can use: the remote is `git@rio.github.com:…`, where
+  # `rio.github.com` is a local SSH alias that resolves on a developer's laptop
+  # and nowhere inside a cluster. Note that this disagrees with the
+  # `home`/`sources` fields in the five charts' Chart.yaml, which say
+  # `github.com/eventa/eventa-infra`; the remote is the one that is verifiable.
+  sourceRepos:
+    - https://github.com/kaungkhantdev/eventa-infra.git
+
+  destinations:
+    # In-cluster. §1.3 draws one Argo CD controller reconciling dev, staging,
+    # UAT and prod, and §3.1 isolates those environments by namespace rather
+    # than by cluster, so there is no second API server to address.
+    - server: https://kubernetes.default.svc
+      namespace: platform
+
+  # Deliberately narrow: this project may create Argo CD's own control objects
+  # and nothing else. A chart that accidentally gets pointed at this project
+  # therefore fails to sync with a message naming the kind it tried to apply,
+  # instead of landing a workload in the namespace that runs the cluster's
+  # ingress controller and secret operator.
+  namespaceResourceWhitelist:
+    - group: argoproj.io
+      kind: AppProject
+    - group: argoproj.io
+      kind: Application
+    - group: argoproj.io
+      kind: ApplicationSet
+
+  # No `clusterResourceWhitelist`, so nothing in this project can create a
+  # cluster-scoped object. The `platform` namespace is not created from Git
+  # either — it has to exist before Argo CD is installed into it.

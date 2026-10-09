@@ -1,0 +1,452 @@
+# The api chart's baseline: the spec's prod sizing, with nothing in it that
+# names an environment.
+#
+# Everything here comes from devops-infrastructure.md §3.2/§3.3 (workloads,
+# resources, probes, disruption, network) and devops-ci-cd.md §4.2/§4.3/§5.1
+# (canary, sync waves, gated migrations). The library's own defaults
+# (deploy/charts/_library/templates/_defaults.tpl) supply the rest, and a value
+# that matches a library default is deliberately absent from this file rather
+# than restated — one place to change a probe period is the reason the library
+# exists (§1.2).
+#
+# Anything that differs per environment — the image SHA, the data-subnet CIDRs,
+# the secret path, hostnames, the Prometheus address, the replica ceiling — is
+# NOT here. It lives in values-<env>.yaml, because Argo CD always renders this
+# chart with one (§1.2: "Chart + per-env values-<env>.yaml in Git"). Rendering
+# this chart into a real namespace without that file fails, with a message
+# naming what is missing (templates/_validate.tpl).
+
+component: api
+
+image:
+  repository: registry.eventa.internal/eventa/api
+  # Overridden per environment by the bot that bumps the digest after CI
+  # (devops-infrastructure.md §1.3). This placeholder is a syntactically valid
+  # SHA tag so the chart renders; it is not a tag anybody built, and the library
+  # refuses `latest` or `main` outright (devops-ci-cd.md §3).
+  tag: sha-0000000
+
+# devops-ci-cd.md §4.3 fixes the sync order: (1) migration pre-deploy Job,
+# (2) api/worker/relay, (3) web. The migration Job overrides this to wave 1
+# through its own annotations, so it still runs first.
+argocd:
+  syncWave: "2"
+
+# The api's workload object is the Rollout in templates/rollout.yaml, not a
+# Deployment (devops-ci-cd.md §4.2). The library emits everything else.
+deployment:
+  enabled: false
+
+# Only read when the HPA is off — the Rollout omits `replicas` entirely while an
+# HPA owns it. devops-infrastructure.md §3.2 sets the api's prod minimum at 3.
+replicas: 3
+
+# devops-infrastructure.md §3.3, api row. Starting points, and the document says
+# so: they are re-tuned from Prometheus utilisation (§6's right-sizing loop).
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
+  limits:
+    cpu: 2000m
+    memory: 1Gi
+
+# eventa-api/src/config/env.validation.ts defaults PORT to 3000; config.env
+# below pins the same number, so the container port and the port the process
+# binds cannot drift apart into a readiness probe that times out against a
+# closed socket.
+ports:
+  - name: http
+    containerPort: 3000
+    protocol: TCP
+
+# The Prometheus endpoint is mounted under the api's global prefix, like every
+# other route (eventa-api/src/modules/metrics/metrics.controller.ts behind
+# main.ts:18). It carries eventa_outbox_lag_seconds, which is the signal
+# eventa-infra/README.md and devops-observability-sre.md §2 say to alert on.
+metrics:
+  path: /api/v1/metrics
+
+# devops-infrastructure.md §3.3 writes these as /health/ready and /health/live.
+# eventa-api/src/main.ts:18 mounts every route under `api/v1`, so the endpoints
+# that exist are the prefixed ones; _validate.tpl refuses an unprefixed path,
+# because the unprefixed one 404s and a pod that never goes ready stalls the
+# canary while serving traffic correctly on the real path.
+probes:
+  readiness:
+    http:
+      # Checks dependencies and gates traffic. Worth knowing:
+      # eventa-api/src/health/health.service.ts currently pings Postgres only,
+      # while §3.3 describes readiness as checking DB/Redis/broker — so a Redis
+      # or RabbitMQ outage does not take this pod out of the Service today. That
+      # is a gap in the service, not in the chart; the chart points at the
+      # endpoint the section specifies.
+      path: /api/v1/health/ready
+  liveness:
+    http:
+      path: /api/v1/health/live
+  startup:
+    # §3.3 puts a startup probe on api and worker "to cover cold NestJS boot
+    # before liveness applies". The api's boot is the slow one of the two: it
+    # builds the OpenAPI document, validates its whole env schema and opens the
+    # DB pool before it listens. The library's 5s × 30 gives it 150s, and
+    # liveness is suspended until this passes.
+    enabled: true
+    http:
+      path: /api/v1/health/live
+
+# devops-infrastructure.md §5: non-secret config only, committed to Git. The
+# library refuses a key here whose name reads like a credential, and
+# _validate.tpl refuses a migration switch (§5.1 — migrations are a Job, never
+# app startup).
+#
+# Keys with a sane default in eventa-api/src/config/env.validation.ts are left
+# to that default rather than duplicated here; only what deployment genuinely
+# decides is set. The per-environment ones (CORS_ORIGINS, PUBLIC_WEB_URL,
+# PUBLIC_API_URL, S3_*) are in values-<env>.yaml.
+config:
+  env:
+    NODE_ENV: production
+    PORT: 3000
+    # devops-observability-sre.md §1 collects structured logs centrally; info is
+    # the level that keeps a request log per request without logging payloads.
+    LOG_LEVEL: info
+    # The exchange the outbox's routing keys are published to. The api declares
+    # it because the events are produced here even though eventa-relay does the
+    # publishing (eventa-api/src/config/env.validation.ts), so api, worker and
+    # relay must all be given the same name or events are published into an
+    # exchange nothing is bound to.
+    RABBITMQ_EXCHANGE: eventa.events
+
+# The api needs DATABASE_URL and JWT_SECRET to boot at all (both required with
+# no default in eventa-api/src/config/env.validation.ts), and §5 allows exactly
+# one path for them: the External Secrets Operator reading /eventa/<env>/*.
+#
+# Off here and on in every values-<env>.yaml, because the path IS the
+# environment — least-privilege workload identity per namespace is what stops a
+# dev pod reading prod credentials (§5), so there is no environment-agnostic
+# value to put here. _validate.tpl refuses to render into a real namespace with
+# this disabled.
+externalSecret:
+  enabled: false
+
+# ---------------------------------------------------------------------------
+# Autoscaling (devops-infrastructure.md §3.2, §6)
+# ---------------------------------------------------------------------------
+# §3.2, api row: CPU + RPS + p95 latency. §6 adds stabilization windows and a
+# minReplicas that is never 0 for a prod service; the library supplies the
+# behaviour block.
+hpa:
+  enabled: true
+  # §3.2's prod floor. _validate.tpl refuses less than 3 in eventa-prod: below
+  # three, the 50% PDB (§3.3) lets a node drain take the api to one replica, and
+  # a 10% canary step has no pod to land on without displacing a stable one.
+  minReplicas: 3
+  # Not specified. §6 asks only for a ceiling that exists ("maxReplicas
+  # ceilings"), and the ceiling's job is to stop a runaway HPA from consuming
+  # the cluster, not to cap a real on-sale — 20 × 2000m is 40 cores of api,
+  # which is a deliberate bound somebody renews from the capacity review
+  # (devops-observability-sre.md §7) rather than a number to grow casually.
+  maxReplicas: 20
+  cpu:
+    targetAverageUtilization: 70
+
+  # The HPA scales the Rollout, not a Deployment — this chart renders no
+  # Deployment (devops-ci-cd.md §4.2). An HPA pointed at the wrong kind is
+  # created happily, reports FailedGetScale, and scales nothing; _validate.tpl
+  # checks the pair.
+  scaleTargetRef:
+    apiVersion: argoproj.io/v1alpha1
+    kind: Rollout
+
+  # The two non-CPU signals §3.2 names for the api, passed to autoscaling/v2
+  # verbatim.
+  #
+  # READ THIS BEFORE COPYING IT. The metric NAMES below are not from any
+  # document — no document names a Prometheus adapter, let alone its rules — and
+  # they are not emitted by the api today: eventa-api's registry holds the two
+  # outbox gauges plus prom-client's process defaults
+  # (eventa-api/src/modules/metrics/metrics.service.ts), with no HTTP request
+  # counter or duration histogram. They are written here, in one place per
+  # environment, as the contract the adapter rule has to satisfy.
+  #
+  # The failure mode matters because it is not the obvious one. An HPA whose
+  # custom metric cannot be fetched does not stop working: it keeps scaling UP
+  # on the metrics that do resolve, and skips every scale-DOWN, because a metric
+  # it cannot read might be the one asking for more replicas. So a missing
+  # series does not look broken — it looks like an api that scaled out for an
+  # on-sale and never came back, billed by the hour (§8 asks the opposite of
+  # non-prod). values-dev.yaml therefore ships CPU only.
+  metrics:
+    - type: Pods
+      pods:
+        metric:
+          name: eventa_http_requests_per_second
+        target:
+          type: AverageValue
+          # A starting point, in the same sense §3.3's CPU numbers are starting
+          # points: re-tune it from the RPS-per-pod the api actually sustains at
+          # its CPU target (§6's right-sizing loop).
+          averageValue: "50"
+    - type: Pods
+      pods:
+        metric:
+          name: eventa_http_request_duration_p95_seconds
+        target:
+          type: AverageValue
+          # devops-observability-sre.md §3 sets the checkout latency objective at
+          # p95 < 2000 ms. An autoscaler that waits for the objective to break
+          # has already spent error budget, so the scale-out trigger sits at half
+          # of it: add replicas while p95 is drifting, not once it has arrived.
+          averageValue: "1"
+
+# ---------------------------------------------------------------------------
+# Canary (devops-ci-cd.md §4.2)
+# ---------------------------------------------------------------------------
+canary:
+  # §4.2: 10% → 25% → 50% → 100%. The 100% is the Rollout completing, not a
+  # step. At the prod floor of 3 replicas (§3.2) and with no traffic-routing
+  # provider chosen, a 10% weight is one pod of three — the smallest slice this
+  # topology can express.
+  steps:
+    - 10
+    - 25
+    - 50
+
+  analysis:
+    enabled: true
+
+    # The arguments the queries below interpolate. The Rollouts controller
+    # resolves them per run: `podTemplateHashValue` yields the
+    # rollouts-pod-template-hash of the latest and the stable ReplicaSet, which
+    # is how a query compares the canary against its own baseline rather than
+    # against a service average that already includes the canary.
+    args:
+      - name: canary-hash
+        valueFrom:
+          podTemplateHashValue: Latest
+      - name: stable-hash
+        valueFrom:
+          podTemplateHashValue: Stable
+      - name: namespace
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.namespace
+
+    # The gates. §4.2 fixes every threshold in here; the PromQL around them does
+    # not come from a document, because none names a Prometheus adapter, a
+    # scrape config or a label scheme.
+    #
+    # Two requirements the queries carry, both of which have to be true of the
+    # environment's Prometheus before these gates mean anything:
+    #
+    #   1. The api must emit an HTTP request counter and a duration histogram.
+    #      It does not yet — see the note under hpa.metrics. Until it does,
+    #      these queries return no data, which Argo Rollouts records as
+    #      inconclusive rather than as a pass, so the Rollout pauses for a human
+    #      instead of promoting an unmeasured build. That is the safe direction
+    #      and it is what §4.2 asks for ("the step must satisfy all gates before
+    #      advancing"), but it does mean the first api deploy into an
+    #      environment with analysis on will wait at 10% until the series exists.
+    #
+    #   2. The scrape must carry the pod's rollouts-pod-template-hash label into
+    #      the series (a `labelmap` on pod labels in a kubernetes_sd scrape
+    #      config). Without it the canary and stable selectors match the same
+    #      pods and every ratio is 1.0 — a gate that always passes, which is
+    #      worse than no gate.
+    metrics:
+      # §4.2, gate 1a: "HTTP 5xx rate ≤ 1%".
+      - name: canary-5xx-rate
+        successCondition: result[0] <= 0.01
+        provider:
+          prometheus:
+            query: |
+              sum(rate(eventa_http_requests_total{
+                namespace="{{args.namespace}}",
+                rollouts_pod_template_hash="{{args.canary-hash}}",
+                status=~"5.."}[5m]))
+              /
+              clamp_min(sum(rate(eventa_http_requests_total{
+                namespace="{{args.namespace}}",
+                rollouts_pod_template_hash="{{args.canary-hash}}"}[5m])), 0.001)
+
+      # §4.2, gate 1b: "and not > baseline + 0.5pp" — the canary's error rate
+      # measured against the stable ReplicaSet's, not against an absolute floor,
+      # so a build that doubles an already-elevated error rate is caught even
+      # while both sides are under 1%.
+      - name: canary-5xx-vs-baseline
+        successCondition: result[0] <= 0.005
+        provider:
+          prometheus:
+            query: |
+              (
+                sum(rate(eventa_http_requests_total{
+                  namespace="{{args.namespace}}",
+                  rollouts_pod_template_hash="{{args.canary-hash}}",
+                  status=~"5.."}[5m]))
+                /
+                clamp_min(sum(rate(eventa_http_requests_total{
+                  namespace="{{args.namespace}}",
+                  rollouts_pod_template_hash="{{args.canary-hash}}"}[5m])), 0.001)
+              )
+              -
+              (
+                sum(rate(eventa_http_requests_total{
+                  namespace="{{args.namespace}}",
+                  rollouts_pod_template_hash="{{args.stable-hash}}",
+                  status=~"5.."}[5m]))
+                /
+                clamp_min(sum(rate(eventa_http_requests_total{
+                  namespace="{{args.namespace}}",
+                  rollouts_pod_template_hash="{{args.stable-hash}}"}[5m])), 0.001)
+              )
+
+      # §4.2, gate 2: "p95 latency (checkout endpoints) ≤ 1.2× baseline". The
+      # route matcher is the checkout surface as it is actually mounted:
+      # eventa-api/src/modules/checkout/checkout.controller.ts serves
+      # `public/checkout` and `public/orders` under the api/v1 prefix, and
+      # devops-observability-sre.md §2 names the same path as the checkout
+      # latency SLI.
+      - name: canary-checkout-p95-vs-baseline
+        successCondition: result[0] <= 1.2
+        provider:
+          prometheus:
+            query: |
+              histogram_quantile(0.95, sum by (le) (rate(
+                eventa_http_request_duration_seconds_bucket{
+                  namespace="{{args.namespace}}",
+                  rollouts_pod_template_hash="{{args.canary-hash}}",
+                  route=~"/api/v1/public/(checkout|orders).*"}[5m])))
+              /
+              histogram_quantile(0.95, sum by (le) (rate(
+                eventa_http_request_duration_seconds_bucket{
+                  namespace="{{args.namespace}}",
+                  rollouts_pod_template_hash="{{args.stable-hash}}",
+                  route=~"/api/v1/public/(checkout|orders).*"}[5m])))
+
+      # §4.2, gate 3: "Pod readiness / crashloops — 0 restarts attributable to
+      # the new rev". The restart counter is kube-state-metrics', which labels
+      # by pod name and not by revision, so it is joined to kube_pod_labels to
+      # select only the canary ReplicaSet's pods. A crash-looping canary would
+      # otherwise be invisible here and visible only as the Rollout's progress
+      # deadline expiring several minutes later.
+      - name: canary-container-restarts
+        successCondition: result[0] <= 0
+        provider:
+          prometheus:
+            query: |
+              sum(
+                increase(kube_pod_container_status_restarts_total{
+                  namespace="{{args.namespace}}"}[5m])
+                * on(namespace, pod) group_left()
+                kube_pod_labels{
+                  namespace="{{args.namespace}}",
+                  label_rollouts_pod_template_hash="{{args.canary-hash}}"}
+              ) or vector(0)
+
+      # §4.2 lists two more gates that are deliberately NOT written here, because
+      # both need an endpoint no document names and a credential that does not
+      # exist in this repo. Inventing either would produce a gate that errors on
+      # every run and aborts every deploy — which reads, from the outside,
+      # exactly like a bad build.
+      #
+      #   - "Sentry new-error rate: no new high-frequency issue signature". Argo
+      #     Rollouts' `web` provider can poll the Sentry issues API; it needs the
+      #     organisation/project slugs and a token, so it belongs with the rest
+      #     of the secrets (§5) and arrives as an env-specific entry here:
+      #
+      #       - name: canary-sentry-new-issues
+      #         successCondition: result == 0
+      #         provider:
+      #           web:
+      #             url: <sentry issues API query for the canary release>
+      #             jsonPath: "{$.length}"
+      #             headers:
+      #               - key: Authorization
+      #                 value: Bearer <from the materialised Secret>
+      #
+      #   - "Synthetic checkout probe: passing". devops-observability-sre.md §5
+      #     already runs a synthetic checkout against a seeded tenant in Stripe
+      #     test mode; the gate is a `job` provider running that same check
+      #     against the canary, or a `prometheus` query over the probe's own
+      #     success series once it is scraped. Either way the probe's address is
+      #     the environment's, not the chart's.
+
+# ---------------------------------------------------------------------------
+# Network (devops-infrastructure.md §3.3)
+# ---------------------------------------------------------------------------
+networkPolicy:
+  # The namespace-wide default-deny. The library leaves this off and names the
+  # api as its owner, because every namespace that runs anything runs the api —
+  # so enabling it here means no environment can exist without the deny.
+  defaultDeny:
+    enabled: true
+
+  ingress:
+    # §3.3 allows ingress → web/api/checkin; the controller runs in `platform`
+    # (§3.1). The public path in front of it is CDN → WAF → load balancer (§2),
+    # so this allow is for the controller's pods and nothing else.
+    fromIngressController:
+      enabled: true
+      namespace: platform
+
+  egress:
+    # Stripe, PromptPay and the comms providers, reached through the NAT gateway
+    # (§2). The api is the workload that talks to them: it creates
+    # PaymentIntents and PromptPay QRs inline during checkout (§4.2 calls this
+    # the payments surface).
+    external:
+      enabled: true
+
+    # Postgres, Redis and RabbitMQ are deliberately NOT enabled here, and that
+    # is not an oversight. They are managed services in private data subnets
+    # (§2), so the allow is an ipBlock whose CIDR comes from the Terraform
+    # network module's output for one specific environment — and the library
+    # refuses to render the rule with an empty CIDR list, because a
+    # NetworkPolicy egress rule with no peer allows every destination rather
+    # than none. The toggle and the CIDR therefore travel together, in
+    # values-<env>.yaml. A PR preview runs its own ephemeral Postgres/Redis/
+    # RabbitMQ as pods instead (devops-ci-cd.md §1.1) and uses
+    # networkPolicy.egress.toPods.
+    #
+    # _validate.tpl refuses to render into a real namespace with neither.
+
+# Enabled per environment with that environment's hostname. §3.3 gives the api
+# an Ingress; §7 and devops-ci-cd.md §1.1 give each environment its own host,
+# down to pr-<n>.preview.eventa.dev for a preview. TLS is not configured here
+# because §2 terminates it at the edge and the load balancer.
+ingress:
+  enabled: false
+
+# ---------------------------------------------------------------------------
+# The gated pre-deploy migration Job (devops-ci-cd.md §5.1)
+# ---------------------------------------------------------------------------
+# This chart is the only one of the five that carries it: eventa-api owns every
+# migration, and worker and relay keep typed mirrors of the tables they touch
+# (eventa-infra/README.md). The library renders it as an Argo CD PreSync hook in
+# sync wave 1 with backoffLimit 0, so a non-zero exit halts the sync and no api
+# pod ever starts against an un-migrated schema.
+migrationJob:
+  enabled: true
+  # eventa-api's only migration entry point: `migrate` in its package.json runs
+  # `drizzle-kit migrate`, which applies the SQL in src/db/migrations and tracks
+  # what it has applied, so a re-run is the no-op §5.1 requires.
+  #
+  # One consequence to carry into the image build: drizzle-kit is a
+  # devDependency in eventa-api/package.json, so a runtime image pruned to
+  # production dependencies cannot run this. The api image has to keep its
+  # migration tooling, or eventa-api has to ship a compiled migration entry
+  # point for this Job to call instead. There is no Dockerfile in eventa-api
+  # yet, so this is a note for whoever writes it rather than a decision made
+  # here.
+  command:
+    - npm
+    - run
+    - migrate
+  # §5.1 also asks for a lock timeout and a statement timeout so a migration
+  # cannot sit holding a long table lock. Those belong in the migration's own
+  # session, which this chart cannot reach: the connection string arrives from
+  # the secrets manager (§5) and drizzle-kit opens it directly. What the chart
+  # can bound is the whole Job — activeDeadlineSeconds, from the library — so a
+  # migration blocked on a lock fails the gate instead of holding the deploy
+  # open indefinitely.

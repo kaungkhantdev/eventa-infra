@@ -1,0 +1,225 @@
+# web — the React SSR public site.
+#
+# This chart implements a specification and makes no design decisions of its
+# own. The sources of truth are devops-infrastructure.md (§1.2 Helm layout,
+# §3.1 namespaces, §3.2 workloads, §3.3 resources/probes/disruption/network,
+# §5 config and secrets, §6 scaling, §7 environments, §8 FinOps) and
+# devops-ci-cd.md (§3 immutable tags, §4.2 rolling vs canary, §4.3 sync waves).
+#
+# Everything the five workloads share lives in ../_library, whose defaults are
+# documented key by key in _library/templates/_defaults.tpl. This file states
+# only what `web` differs by — which is why it is short, and why the block at
+# the bottom lists what is inherited and from which section, so that "not
+# mentioned here" never has to mean "nobody thought about it".
+#
+# These are the PRODUCTION values (§3.2's prod figures). Each values-<env>.yaml
+# layers the few things that genuinely differ per environment under §7's parity
+# rule: the pinned image tag, the hostname, the log level, the autoscaling
+# floor.
+
+component: web
+
+image:
+  # The private in-region registry of devops-ci-cd.md §3; the path follows the
+  # convention already set in _library/README.md.
+  repository: registry.eventa.internal/eventa/web
+  # A placeholder, and the only value in this file that no release ever runs: a
+  # deployment always takes its tag from values-<env>.yaml, which the promotion
+  # bot bumps (devops-ci-cd.md §4.1, §3's "promotion is by digest, not
+  # rebuild"). It is here so the chart lints and renders on its own, and it has
+  # the shape of a SHA because §3 permits nothing else — the library refuses
+  # `latest` and `main` outright. A forgotten overlay therefore fails loudly on
+  # ImagePullBackOff rather than quietly shipping yesterday's build.
+  tag: sha-0000000
+
+environment: prod
+
+# devops-ci-cd.md §4.3 fixes the order: (1) the migration Job, (2) api/worker/
+# relay, (3) web. web syncs last because an SSR page is only correct once the
+# api it renders against is already serving the new contract.
+argocd:
+  syncWave: "3"
+
+# devops-infrastructure.md §3.3. Both sides are required by the library, which
+# refuses to render without them: a pod with no requests is BestEffort — first
+# evicted under node pressure — and a CPU-target HPA has no denominator.
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+
+# devops-infrastructure.md §3.2: web's minimum in prod is 3 replicas and its
+# scaling signal is CPU + RPS.
+#
+# `replicas` is deliberately absent: the library omits that field from the
+# Deployment whenever an HPA exists, because Argo CD runs with self-heal and
+# drift detection (§1.3) and a replica count in Git is drift the moment the HPA
+# scales out. The floor below is the one that matters.
+hpa:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 20
+  cpu:
+    # Restated rather than inherited, because §3.2 names CPU as half of web's
+    # signal and a reader who sees only the RPS entry below would take that for
+    # the whole of it. The number is the library's default.
+    targetAverageUtilization: 70
+  metrics:
+    - type: Pods
+      pods:
+        metric:
+          # RPS — the other half of §3.2's signal.
+          #
+          # No document names this series. The name belongs to whichever
+          # Prometheus adapter an environment runs and §6 commits to none, which
+          # is why ../_library ships no metric names at all. It is stated here
+          # instead of omitted so the chart implements the signal §3.2 requires,
+          # and because the failure mode is visible: until an adapter exposes
+          # this series the HPA reports FailedGetPodsMetric on the object and
+          # carries on scaling from CPU, since the controller only gives up when
+          # every metric is unavailable. The alternative — shipping CPU alone —
+          # would look complete and silently be half the specified policy.
+          name: http_requests_per_second
+        target:
+          type: AverageValue
+          # Requests per second per pod. No document fixes this; §3.3 calls even
+          # its own CPU and memory figures "starting points, tuned from
+          # Prometheus" and §6 makes that a standing loop, so retune this from
+          # the per-workload golden-signals dashboard
+          # (devops-observability-sre.md §1.2) rather than trusting it.
+          averageValue: "50"
+  # §6 requires a maxReplicas ceiling and names no number. Roughly 6× the floor:
+  # enough headroom for an on-sale burst (§6's "on-sale spike: web + api HPAs
+  # scale on RPS/latency"), while a runaway or misreported metric cannot consume
+  # the whole node pool before the cluster autoscaler is asked for more nodes.
+
+# Non-secret configuration (§5: config is not secret, secret is never in Git).
+#
+# Worth knowing what this gets ahead of: eventa-web is still the client-only
+# Vite prototype — its package.json has no server entry point, and unlike
+# eventa-api/src/config/env.validation.ts it has no env contract at all — so the
+# SSR server these three names describe does not exist yet. They are kept to the
+# three the deployment itself depends on; the rest of web's configuration should
+# arrive with the server that reads it, not be guessed at here.
+config:
+  env:
+    # Must agree with the container port the library declares (http / 3000) or
+    # the readiness probe never succeeds, and a readiness probe that never
+    # succeeds stalls the rollout while serving no traffic.
+    PORT: "3000"
+    # §5's own example of non-secret config starts with the log level.
+    LOG_LEVEL: info
+    # The in-cluster api — the only thing web talks to (see the NetworkPolicy
+    # below). Two parts of this value are fixed outside this chart: the global
+    # prefix `api/v1` comes from eventa-api/src/main.ts:18, and the host is the
+    # api release's Service name, which the Argo CD Application will fix once
+    # eventa-infra/argocd exists. Confirm the host then; the prefix is settled.
+    API_BASE_URL: http://api/api/v1
+
+# Probes are inherited unchanged, because the library already carries exactly
+# what §3.3 specifies for an HTTP workload: readiness `GET /health/ready`
+# (checks DB/Redis/broker, gates traffic and rolling updates) and liveness
+# `GET /health/live` (process-alive only). No startup probe — §3.3 puts that on
+# api and worker to cover a cold NestJS boot, and web is a Node SSR server with
+# no such boot. The endpoints come from §3.3 rather than from the code for the
+# same reason as the env vars above: the SSR server is not written yet. Copying
+# the probe blocks in here would only create a second version to drift from.
+
+# devops-infrastructure.md §3.3, and the shape of this block is the point of
+# this chart.
+#
+# web takes public traffic and talks to the api. It does NOT touch the data
+# tier: §3.3's data-store allows are listed for api/checkin/worker/relay and
+# not for web, and §2 reaches the private data subnets only from the app
+# subnets through policy. So postgres/redis/rabbitmq stay off here, and an SSR
+# page that later wants a query has to go through the api like every other
+# reader. Their absence is a decision, not an oversight.
+networkPolicy:
+  ingress:
+    # §3.3: ingress → web/api/checkin. The controller runs in `platform` (§3.1),
+    # which is the library's default peer, and the public path in front of it is
+    # CDN → WAF → load balancer (§2). Ports default to the container's own.
+    fromIngressController:
+      enabled: true
+  egress:
+    toPods:
+      # The one pod-to-pod allow web needs, and §3.3 permits no undeclared
+      # others.
+      #
+      # It selects the api PODS rather than its Service on purpose: egress
+      # policy is evaluated against the destination pod IP after the Service's
+      # DNAT, so a rule naming a Service would match nothing. `component: api`
+      # narrows it past the check-in pool, which runs the same image under the
+      # same name (§3.2) and exists to serve door scans without competing with
+      # checkout — SSR reads have no business in it.
+      - podSelector:
+          app.kubernetes.io/name: api
+          app.kubernetes.io/component: api
+        ports:
+          # The number, not the name `http`: a named port in a NetworkPolicy is
+          # resolved per destination pod by the CNI, and no CNI has been chosen.
+          # 3000 is what the api listens on
+          # (eventa-api/src/config/env.validation.ts:11) and what ../_library
+          # declares as the container port.
+          - port: 3000
+            protocol: TCP
+    # §3.3's egress to Stripe/PromptPay/comms via NAT stays off: those calls
+    # belong to the api and the worker. web takes no payment and sends no mail.
+
+# §3.3 gives web an Ingress. §2 puts CDN → WAF → public load balancer in front
+# of it, so TLS, the OWASP ruleset and rate limiting are already applied before
+# traffic arrives here and nothing in this chart should repeat them.
+#
+# `className`, `annotations` and `tls` are left unset, each for a reason:
+#
+#   * className and the annotation keys name a specific ingress controller.
+#     §3.1 says only that the controller runs in `platform`, so an Ingress with
+#     no class is admitted by the cluster's default IngressClass — correct until
+#     a controller is actually chosen, and one line per environment afterwards.
+#   * TLS terminates at the edge or the L7 load balancer per §2, so there is no
+#     certificate for this object to reference.
+#
+# The hostnames are per-environment and live in the overlays (§7).
+ingress:
+  enabled: true
+
+# -----------------------------------------------------------------------------
+# Inherited from ../_library, listed so that silence here is never ambiguous.
+# -----------------------------------------------------------------------------
+#   pdb                       minAvailable: 50% per service (§3.3).
+#   updateStrategy            rolling, maxSurge 1 / maxUnavailable 0 (§3.3).
+#                             web is rolling; devops-ci-cd.md §4.2 gives canary
+#                             to the api alone and lists web as "Rolling —
+#                             stateless; fast to shift".
+#   antiAffinity              soft zone spread, per §3.3's "anti-affinity
+#                             spreads replicas across AZs"; soft so that the
+#                             fourth replica of an on-sale scale-out still
+#                             schedules when the region has three AZs.
+#   service                   one ClusterIP, port 80 → http. Never a
+#                             LoadBalancer: §2's only ingress into the VPC is
+#                             the load balancer Terraform owns.
+#   metrics                   /metrics on the http port, scraped from
+#                             `platform` (devops-observability-sre.md §1 has
+#                             all five workloads scraped).
+#   securityContext           non-root, read-only root filesystem, all
+#                             capabilities dropped, with a writable /tmp — which
+#                             SSR needs for its render cache.
+#   terminationGracePeriod    60s, long enough to finish in-flight renders.
+#   networkPolicy.defaultDeny off. The object is namespace-wide, so exactly one
+#                             release per namespace should own it, and
+#                             _library/README.md puts that on the api — the one
+#                             chart every namespace runs.
+#   migrationJob              off. eventa-api owns every migration
+#                             (eventa-infra/README.md) and §5.1 runs it as a
+#                             single gated pre-deploy Job, never one per chart
+#                             and never inside app startup.
+#   externalSecret            off, because web holds no secret of its own. §5's
+#                             list is DB DSNs, Redis and broker credentials,
+#                             payment and comms keys and signing keys; web has
+#                             none of them, since it reads through the api and
+#                             forwards the caller's own session. Enabling it
+#                             with nothing to fetch would materialise an empty
+#                             Secret, which the library refuses to render.

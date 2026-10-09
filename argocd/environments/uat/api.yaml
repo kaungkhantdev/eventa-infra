@@ -1,0 +1,57 @@
+# THIS APPLICATION CANNOT SYNC YET. deploy/charts/api has no values-uat.yaml,
+# so the `valueFiles` entry below resolves to nothing and Argo CD reports
+# "values file does not exist" instead of deploying.
+#
+# The reference stays anyway, because that error names the fix. `web` and
+# `relay` both ship a values-uat.yaml and both explain in its header why a
+# fourth overlay was needed; these three charts were built with dev, staging and
+# prod only. Nothing here is unsafe either way — every chart refuses to render
+# without an environment overlay, and the api fails on `canary.analysis`
+# having no Prometheus address —
+# but those messages send the reader into the chart's templates, while a
+# missing-file error sends them to the file that is actually missing.
+# ../../README.md says what the overlay has to contain.
+
+# api — the core API, and the only chart of the five that is deployed
+# progressively (devops-ci-cd.md §4.2): its workload object is an Argo Rollouts
+# Rollout stepping 10% → 25% → 50%, with an AnalysisTemplate gating each step.
+#
+# It also carries the gated pre-deploy migration Job (§5.1). The Job is a
+# PreSync hook inside this chart with `backoffLimit: 0`, so a failed migration
+# halts this Application's sync and no api pod starts against an un-migrated
+# schema. eventa-api owns every migration; the other four charts ship none.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  # The Application name carries the environment because all four environments'
+  # Applications live in the one `platform` namespace (§3.1); the Helm release
+  # name below deliberately does not.
+  name: eventa-uat-api
+  namespace: platform
+spec:
+  project: eventa-uat
+
+  source:
+    repoURL: https://github.com/kaungkhantdev/eventa-infra.git
+    targetRevision: main
+    path: deploy/charts/api
+    helm:
+      # Not the Application name — see ../../README.md, "Release names".
+      releaseName: api
+      # Helm always reads the chart's own values.yaml as the base, so only the
+      # overlay is listed. devops-infrastructure.md §1.2 makes this pair the
+      # unit of deployment, and the image tag inside the overlay is what a
+      # promotion moves — which is why there are no `helm.parameters` here.
+      valueFiles:
+        - values-uat.yaml
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: eventa-uat
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

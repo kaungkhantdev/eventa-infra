@@ -1,0 +1,68 @@
+# The dev environment's project. Namespace `eventa-dev`
+# (devops-infrastructure.md §3.1): the continuous-integration target,
+# synthetic and seeded data, no real PII, auto-deployed on every merge to
+# `main` (§7, devops-ci-cd.md §4.1).
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: eventa-dev
+  namespace: platform
+spec:
+  description: Eventa dev — continuous integration target (devops-infrastructure.md §3.1, §7).
+
+  sourceRepos:
+    - https://github.com/kaungkhantdev/eventa-infra.git
+
+  # One namespace, and that is the whole point of a project per environment.
+  # devops-infrastructure.md §5 grants least-privilege secret access per
+  # namespace so "a dev pod cannot read prod secrets"; this is the Argo-CD-side
+  # half of the same boundary — an Application in this project cannot write
+  # into another environment's namespace even if someone edits its
+  # `destination`.
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: eventa-dev
+
+  # The namespace is part of desired state (§3.1 tabulates it), and the
+  # Applications create it through `CreateNamespace=true`, so the project has
+  # to permit the one cluster-scoped kind that implies — and only that one.
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+
+  # Exactly the kinds the five charts render today, collected from
+  # `helm template` over every chart and environment rather than guessed. The
+  # list is a tripwire, not paperwork: when a chart starts emitting something
+  # new, the sync fails naming the kind it refused, which is a better place to
+  # find out than a running cluster.
+  namespaceResourceWhitelist:
+    - group: ""
+      kind: ConfigMap
+    - group: ""
+      kind: Service
+    - group: ""
+      kind: ServiceAccount
+    - group: apps
+      kind: Deployment
+    - group: batch
+      kind: Job
+    - group: autoscaling
+      kind: HorizontalPodAutoscaler
+    - group: policy
+      kind: PodDisruptionBudget
+    - group: networking.k8s.io
+      kind: Ingress
+    - group: networking.k8s.io
+      kind: NetworkPolicy
+    # Materialised by the External Secrets Operator from the managed secrets
+    # manager at runtime (§5) — Git holds the path, never the value.
+    - group: external-secrets.io
+      kind: ExternalSecret
+    # The api is the one workload deployed progressively
+    # (devops-ci-cd.md §4.2), so its workload object is an Argo Rollouts
+    # Rollout and its gates are an AnalysisTemplate. The other four are plain
+    # Deployments.
+    - group: argoproj.io
+      kind: Rollout
+    - group: argoproj.io
+      kind: AnalysisTemplate

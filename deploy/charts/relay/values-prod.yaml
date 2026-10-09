@@ -1,0 +1,64 @@
+# relay — production (namespace `eventa-prod`, devops-infrastructure.md §3.1/§7).
+#
+# Rendered on top of values.yaml, which already carries §3.3's production
+# figures. This file holds only the four references that cannot live in a
+# shared baseline: the pinned image, the environment name, the secret path and
+# the data-subnet CIDRs. There is no sizing here because there is nothing to
+# size — the relay is one replica of 100m/256Mi everywhere.
+
+image:
+  # devops-ci-cd.md §3: an immutable git-SHA tag, and promotion between
+  # environments is this line moving (§1.2) — CI's bot commits it after the
+  # digest has passed dev, staging and UAT (§1.3, §4.1). Production sync is
+  # gated on manual approval (§4.1), so this value changing is the release.
+  #
+  # PLACEHOLDER. It is all zeroes rather than a plausible SHA so that it cannot
+  # be mistaken for a real revision: a tag that resolves to nothing fails at
+  # image pull, which is loud, while a plausible wrong SHA would quietly run the
+  # wrong code.
+  tag: sha-0000000
+
+# devops-infrastructure.md §7. It is not derived from the namespace because the
+# namespace is `eventa-prod` and this is what tags the logs, traces and metrics
+# that devops-observability-sre.md §1 correlates across the five workloads.
+environment: prod
+
+externalSecret:
+  # devops-infrastructure.md §5: per-environment paths with least-privilege IAM
+  # per namespace, so a pod in eventa-dev cannot read this. DATABASE_URL and
+  # RABBITMQ_URL are the only two keys the relay needs — and the only two it has
+  # (eventa-relay/src/config/env.validation.ts:16-17).
+  #
+  # `extract` pulls every key at the path, so adding a key to the secret in the
+  # secrets manager does not need a chart change. Rotation re-syncs within
+  # refreshInterval (§5); it does not restart the pod, so a rotated credential
+  # is picked up on the relay's next reconnect — harmless here, because the
+  # publisher reconnects on its own (eventa-relay/src/relay/rabbit-publisher.ts:53)
+  # and the pg pool opens new connections lazily.
+  dataFrom:
+    - extract:
+        key: /eventa/prod/relay
+
+# The data subnets, one per availability zone. These come from the Terraform
+# network module's output for this environment (§1.1) and are PLACEHOLDERS until
+# that module exists — no cloud provider has been chosen, so no real range can
+# be written here yet.
+#
+# All three zones are listed on purpose. Production Postgres is primary + read
+# replica with automatic failover to the standby, and RabbitMQ is a three-node
+# cluster (§4): the endpoint the relay connects to moves between zones during a
+# failover. An allow covering only the current primary's subnet works perfectly
+# until the first failover, and then the relay stops publishing and the
+# NetworkPolicy is the last place anyone looks.
+networkPolicy:
+  egress:
+    postgres:
+      cidrs:
+        - 10.40.3.0/24
+        - 10.40.4.0/24
+        - 10.40.5.0/24
+    rabbitmq:
+      cidrs:
+        - 10.40.3.0/24
+        - 10.40.4.0/24
+        - 10.40.5.0/24

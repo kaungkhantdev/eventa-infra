@@ -1,0 +1,124 @@
+# checkin — eventa-prod (devops-infrastructure.md §3.1, §7).
+#
+# Real tenants, real PII, PDPA-governed, gated manual sync (§7). Everything the
+# spec fixes for the workload is in values.yaml and is already the prod shape;
+# this file carries only what an ENVIRONMENT supplies: the promoted image tag,
+# the network and secret coordinates, and the hostname. Nothing here is a
+# sizing override, because prod is the baseline the other environments subtract
+# from.
+
+environment: prod
+
+image:
+  # Set by the CI bot, not by hand: devops-infrastructure.md §1.2 and
+  # devops-ci-cd.md §4.1 promote to prod as a PR that bumps this one line to the
+  # digest that staging and UAT already ran, and §3 forbids a rebuild. The value
+  # below is a placeholder with no image behind it — a prod sync against it is
+  # an ImagePullBackOff, which is the loud failure to have while the GitOps
+  # wiring is still being built.
+  tag: sha-0000000
+
+config:
+  env:
+    LOG_LEVEL: info
+    # Both are REQUIRED by eventa-api/src/config/env.validation.ts — the process
+    # refuses to boot without them, even though the door flows read no object,
+    # because the S3 client is constructed at startup regardless.
+    #
+    # Left as obvious placeholders rather than plausible values. They come from
+    # the object-storage module's output (§1.1, §4), which does not exist yet,
+    # and a real-looking region identifier would name a cloud provider that the
+    # spec deliberately does not name. The only route that would use them is one
+    # this pool does not serve, so a token that fails loudly if it is ever
+    # reached beats a guess that looks authoritative.
+    S3_BUCKET: REPLACE_WITH_UPLOADS_BUCKET
+    S3_REGION: REPLACE_WITH_STORAGE_REGION
+    # Both are shown to people and signed into links, so they have to be the
+    # addresses that resolve from outside the cluster, not Service names. The
+    # zone is the one Terraform's `global/` state owns (§1.1); `eventa.co.th` is
+    # the product's domain, the subdomains are this chart's assumption.
+    PUBLIC_WEB_URL: https://eventa.co.th
+    PUBLIC_API_URL: https://api.eventa.co.th
+    # The door app is served from the public web origin, so that is the only
+    # origin this pool needs to answer with credentials. The api's own `*`
+    # default would make every site on the internet a valid caller of a
+    # session-bearing endpoint.
+    CORS_ORIGINS: https://eventa.co.th
+
+externalSecret:
+  # §5: per-environment store paths with least-privilege IAM per namespace, so a
+  # dev pod cannot read prod secrets. This pool extracts the api's path because
+  # it is the api process — see values.yaml for why it does not get a duplicate
+  # of the same credentials under its own key.
+  dataFrom:
+    - extract:
+        key: /eventa/prod/api
+
+ingress:
+  # Its own hostname rather than a path on the api's, for a mechanical reason:
+  # the door's routes are /api/v1/events/{eventId}/check-ins/*
+  # (eventa-api/src/modules/check-in/check-in.controller.ts), and an Ingress
+  # `Prefix` path cannot match a wildcard in the middle of a path. There is no
+  # rule that sends only check-in traffic to this pool on a shared host, so the
+  # split has to be by name, and the door clients point at this one.
+  #
+  # `className` is deliberately unset. The ingress controller runs in `platform`
+  # (§3.1) but no document says which controller it is, and a wrong class is an
+  # Ingress that is never picked up by anything. An unset class uses the
+  # cluster's default IngressClass; set it here once the controller is chosen.
+  hosts:
+    - host: checkin.eventa.co.th
+      paths:
+        - path: /api/v1
+          pathType: Prefix
+
+# The data subnets the managed Postgres, Redis and RabbitMQ sit in (§2, §4).
+# PLACEHOLDERS: these are the shape, not the addresses. They come from the
+# Terraform network module's output for this environment (§1.1), which does not
+# exist yet — no cloud provider has been chosen. Replace them with that output
+# in the same change that creates it. A wrong CIDR here is not a render error:
+# it is a connection timeout on every readiness probe, so the pool simply never
+# becomes ready.
+#
+# Set under `global` rather than per-store so that one value serves all five
+# charts in this environment, which is also where an umbrella chart or the
+# App-of-Apps would own it.
+global:
+  eventa:
+    network:
+      postgresCidrs:
+        - 10.20.1.0/24
+      redisCidrs:
+        - 10.20.3.0/24
+      rabbitmqCidrs:
+        - 10.20.5.0/24
+
+# serviceAccount:
+#   annotations:
+#     # The workload-identity / IRSA binding that grants this pool read access to
+#     # /eventa/prod/* (§5). The annotation KEY is cloud-specific and §1.1 names
+#     # the mechanism neutrally ("IRSA/workload-identity") because no provider
+#     # has been chosen, so it cannot be written yet without picking one.
+#     #
+#     # Nothing in the door flows needs it today: the External Secrets Operator
+#     # authenticates to the secrets manager with its own identity through the
+#     # ClusterSecretStore, and this pool makes no object-storage call. Add it
+#     # when the cloud is chosen, or when this pool is given a route that does.
+
+# nodeSelector / tolerations / priorityClassName are left unset ON PURPOSE.
+# §6 says a "separate node pool can back the burstable check-in pool", and that
+# is the right home for a workload that goes from 2 pods to 20 in ninety
+# seconds. It is commented out rather than written because a nodeSelector that
+# names a pool which does not exist yet leaves every replica Pending — the pool
+# would not be isolated, it would be absent — and a priorityClassName naming a
+# PriorityClass that does not exist is rejected by the API server outright.
+# Uncomment both in the same change that creates the pool.
+#
+# nodeSelector:
+#   eventa.io/node-pool: checkin-burst
+# tolerations:
+#   - key: eventa.io/node-pool
+#     operator: Equal
+#     value: checkin-burst
+#     effect: NoSchedule
+# priorityClassName: eventa-checkin-burst

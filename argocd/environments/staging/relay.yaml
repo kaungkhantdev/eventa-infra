@@ -1,0 +1,44 @@
+# relay — the transactional outbox publisher, pinned to exactly one replica.
+#
+# devops-infrastructure.md §3.2 tabulates a minimum of 2 and that entry is
+# wrong: the reader takes no row lock
+# (eventa-relay/src/relay/outbox-reader.repository.ts:25), so a second replica
+# republishes every row. Nothing in this Application enforces that — the chart
+# does, and it refuses to render if the replica count is raised. There is
+# deliberately no Argo CD parameter here that could reach `replicas`, which
+# would be the one way to get a second publisher past the chart's guard.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  # The Application name carries the environment because all four environments'
+  # Applications live in the one `platform` namespace (§3.1); the Helm release
+  # name below deliberately does not.
+  name: eventa-staging-relay
+  namespace: platform
+spec:
+  project: eventa-staging
+
+  source:
+    repoURL: https://github.com/kaungkhantdev/eventa-infra.git
+    targetRevision: main
+    path: deploy/charts/relay
+    helm:
+      # Not the Application name — see ../../README.md, "Release names".
+      releaseName: relay
+      # Helm always reads the chart's own values.yaml as the base, so only the
+      # overlay is listed. devops-infrastructure.md §1.2 makes this pair the
+      # unit of deployment, and the image tag inside the overlay is what a
+      # promotion moves — which is why there are no `helm.parameters` here.
+      valueFiles:
+        - values-staging.yaml
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: eventa-staging
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

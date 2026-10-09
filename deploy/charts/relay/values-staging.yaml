@@ -1,0 +1,35 @@
+# relay — staging (namespace `eventa-staging`, devops-infrastructure.md §3.1/§7).
+#
+# Prod-like and the rehearsal environment: DAST, performance runs and migration
+# rehearsal against anonymised data (§7, devops-ci-cd.md §4.1). "Prod-like" is
+# why this file is the shortest of the four — staging differs from the production
+# baseline only in which secrets and which subnets it may reach. Log level,
+# poll interval and batch size are deliberately left at the production values,
+# because a rehearsal that is tuned differently from production rehearses
+# something else.
+
+image:
+  # Auto-promoted after dev is healthy (devops-ci-cd.md §4.1) — the same signed
+  # digest, never a rebuild (§3). PLACEHOLDER; see values-prod.yaml.
+  tag: sha-0000000
+
+environment: staging
+
+externalSecret:
+  # §5: `/eventa/staging/*`. Staging holds anonymised data, so these credentials
+  # reach a database with no raw production PII in it.
+  dataFrom:
+    - extract:
+        key: /eventa/staging/relay
+
+# One CIDR per store: §8 runs non-production on single-node data services, so
+# there is no second zone to allow. PLACEHOLDERS from the Terraform network
+# module (§1.1).
+networkPolicy:
+  egress:
+    postgres:
+      cidrs:
+        - 10.20.3.0/24
+    rabbitmq:
+      cidrs:
+        - 10.20.3.0/24

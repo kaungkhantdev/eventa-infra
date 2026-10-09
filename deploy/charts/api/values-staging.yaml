@@ -1,0 +1,87 @@
+# api — staging (namespace `eventa-staging`, devops-infrastructure.md §3.1/§7).
+#
+# §7 calls staging "prod-like" and puts DAST (OWASP ZAP), perf and **migration
+# rehearsal** here, so this file changes as little as possible from the prod
+# baseline in values.yaml. The canary analysis in particular stays on: staging
+# is where a gate that is mis-written gets found, and finding it in prod means
+# finding it by having every deploy stall at 10% of checkout traffic.
+#
+# The one deliberate departure from parity is the replica count. §8 (FinOps)
+# asks non-prod to run smaller replica counts, and §7 lists replica count as one
+# of the four things environments are allowed to differ in.
+#
+# PLACEHOLDERS are tagged as in values-prod.yaml and mean the same thing: an
+# output of a Terraform module that has not been run, in a repo with no
+# `terraform/` yet.
+
+environment: staging
+
+image:
+  # PLACEHOLDER. Bot-managed. §4.1 auto-promotes dev → staging, so this line
+  # moves without a human approving it; the approval gates are UAT and prod.
+  tag: sha-0000000
+
+# §8: non-prod runs smaller. Two is the smallest floor that keeps the rest of
+# the chart honest — a 50% PodDisruptionBudget (§3.3) still permits one
+# disruption, and a canary step still has a stable pod to compare against, which
+# a single-replica staging would not. Below two, a DAST run or a perf test would
+# be measuring a topology production does not have.
+hpa:
+  minReplicas: 2
+  maxReplicas: 10
+
+config:
+  env:
+    PUBLIC_WEB_URL: https://staging.eventa.dev
+    PUBLIC_API_URL: https://api.staging.eventa.dev
+    CORS_ORIGINS: https://staging.eventa.dev
+    # PLACEHOLDER (object storage). A separate bucket per environment, because
+    # §7 forbids raw prod PII outside production and a shared bucket would put
+    # attendee uploads in reach of a DAST run.
+    S3_BUCKET: eventa-staging-uploads
+    S3_REGION: REPLACE_WITH_TERRAFORM_OBJECT_STORAGE_REGION
+
+externalSecret:
+  enabled: true
+  dataFrom:
+    - extract:
+        key: /eventa/staging/api
+
+ingress:
+  enabled: true
+  hosts:
+    - host: api.staging.eventa.dev
+      paths:
+        - path: /
+          pathType: Prefix
+
+networkPolicy:
+  egress:
+    # PLACEHOLDER (data subnets) — the network module's data-subnet outputs for
+    # this environment. Deliberately a different range from prod's: these lists
+    # are the only thing stopping a staging pod from reaching the production
+    # database if the two environments ever share a VPC peering.
+    postgres:
+      enabled: true
+      cidrs:
+        - 10.20.1.0/24
+        - 10.20.2.0/24
+        - 10.20.3.0/24
+    redis:
+      enabled: true
+      cidrs:
+        - 10.20.1.0/24
+        - 10.20.2.0/24
+        - 10.20.3.0/24
+    rabbitmq:
+      enabled: true
+      cidrs:
+        - 10.20.1.0/24
+        - 10.20.2.0/24
+        - 10.20.3.0/24
+
+canary:
+  analysis:
+    # PLACEHOLDER (metric sink) — the Prometheus in this cluster's `platform`
+    # namespace (§3.1).
+    prometheusAddress: http://prometheus-server.platform.svc.cluster.local:9090

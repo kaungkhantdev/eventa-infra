@@ -1,0 +1,334 @@
+# checkin — the door-scan pool. The prod baseline from the spec.
+#
+# What is in THIS file is what devops-infrastructure.md fixes for every
+# environment: the component, the image, the resource envelope (§3.3), the
+# probe endpoints the api image actually serves, the scaling signals (§3.2) and
+# the network allows (§3.3). The prod numbers are the baseline because §7 makes
+# the environments parity copies that "differ only in sizing, replica counts,
+# retention, and data sensitivity" — so prod is the shape and the lower
+# environments subtract from it.
+#
+# What an ENVIRONMENT supplies is in values-<env>.yaml: the promoted image tag
+# (§1.2), the data-subnet CIDRs, the public hostname and the secrets path. The
+# bare chart therefore does not render on its own, and that is deliberate — see
+# README.md, "Rendering it". Lint and template with an environment's values.
+#
+# Anything the library already defaults correctly for this workload is absent
+# here rather than restated: the PodDisruptionBudget (`minAvailable: 50%`, §3.3),
+# the soft cross-AZ anti-affinity (§3.3), the hardened pod and container
+# security contexts, the writable /tmp, the named container port `http` on 3000
+# and the ClusterIP Service in front of it. Read ../_library/templates/_defaults.tpl
+# for those; they are not repeated here so there is one place they can change.
+
+# The label that keeps this pool and the main api pool apart. They run the same
+# image in the same namespace (§3.2), so `app.kubernetes.io/component` is the
+# only thing that distinguishes their Deployments, Services, PDBs and
+# dashboards. templates/_guards.tpl refuses to render if it is changed.
+component: checkin
+
+image:
+  # The api image, not a checkin image — there is no checkin image, and that is
+  # the point of §3.2: one artifact, two pools, separate failure domains. The
+  # registry is the private in-region one from devops-ci-cd.md §3; no document
+  # names its address, so this follows the form used in ../_library/README.md.
+  repository: registry.eventa.internal/eventa/api
+  # `tag` is intentionally absent. devops-infrastructure.md §1.2 promotes an
+  # environment by moving a pinned SHA tag in that environment's values file,
+  # and devops-ci-cd.md §4.1 makes the promotion a PR against it — so a tag
+  # here would be a fifth place the bot would have to know about, and the one
+  # it would forget. The library fails the render with that explanation if no
+  # environment supplied one.
+
+# devops-ci-cd.md §4.3: wave 1 is the migration Job, wave 2 is api/worker/relay.
+# This pool runs the api image, so it must not start before wave 1 has run.
+argocd:
+  syncWave: "2"
+
+# ---------------------------------------------------------------------------
+# Resources (devops-infrastructure.md §3.3)
+# ---------------------------------------------------------------------------
+# The same envelope as api, because it is the same process serving the same
+# framework. §3.3 calls these starting points to be tuned from Prometheus; the
+# ratio matters as much as the numbers — a 4× burst headroom between request and
+# limit is what lets a scan spike be absorbed by the pods already running while
+# the HPA is still adding more.
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
+  limits:
+    cpu: 2000m
+    memory: 1Gi
+
+# ---------------------------------------------------------------------------
+# Probes (devops-infrastructure.md §3.3, devops-ci-cd.md §4.3)
+# ---------------------------------------------------------------------------
+# The endpoints §3.3 specifies are `/health/ready` and `/health/live`, but the
+# api mounts every route under a global prefix — `app.setGlobalPrefix('api/v1')`
+# at eventa-api/src/main.ts:18 — so on this image they answer at
+# /api/v1/health/*. A probe on the spec's bare path would 404 forever: readiness
+# would never pass, the rollout would stall with no traffic served, and liveness
+# would restart every pod on a loop.
+#
+# Worth knowing, and not something a chart can fix: §3.3 describes readiness as
+# checking "DB/Redis/broker deps", but the endpoint behind it currently asserts
+# only the database — `select 1`, in eventa-api/src/health/health.service.ts.
+# So this probe gates traffic on Postgres alone. A Redis outage leaves every
+# replica Ready and failing sign-ins at the door. The fix belongs in the api's
+# health service; the chart points at the endpoint that exists.
+probes:
+  readiness:
+    http:
+      path: /api/v1/health/ready
+  liveness:
+    http:
+      path: /api/v1/health/live
+  # §3.3 puts a startup probe on api and worker "to cover cold NestJS boot
+  # before liveness applies", and devops-ci-cd.md §4.3 asks every workload for
+  # all three. This pool is the api image, so it pays the same cold-boot cost:
+  # eventa-api/src/app.module.ts wires in excess of fifty feature modules
+  # before it listens. Without this, liveness starts counting during boot and
+  # restarts the pod it is waiting for.
+  startup:
+    enabled: true
+    http:
+      path: /api/v1/health/live
+
+# The scrape endpoint moves with the same global prefix — the controller is
+# mounted at `metrics` in eventa-api/src/modules/metrics/metrics.controller.ts,
+# so it answers at /api/v1/metrics. devops-observability-sre.md §1 has all five
+# workloads scraped, and a wrong path here is a target that reports "up" and
+# zero series.
+metrics:
+  path: /api/v1/metrics
+
+# ---------------------------------------------------------------------------
+# Non-secret configuration (devops-infrastructure.md §5)
+# ---------------------------------------------------------------------------
+# Committed, readable by anyone with the repo. The per-environment half of this
+# map (log level, bucket, public URLs, CORS) is in values-<env>.yaml; what is
+# here is identical in every environment.
+#
+# These are not decoration: eventa-api/src/config/env.validation.ts refuses to
+# boot on an invalid env, so an omission here is a CrashLoopBackOff, not a
+# default.
+config:
+  env:
+    # The runtime mode of the built image, which is `production` in every
+    # deployed environment including eventa-dev — it selects framework
+    # behaviour (no dev-mode stack traces, no watch), not which environment
+    # this is. Which environment this is travels separately, in the
+    # OTEL_RESOURCE_ATTRIBUTES the library derives from the namespace.
+    NODE_ENV: production
+    # Matches the library's named container port, which the Service, the probes
+    # and the scrape annotation all address by name. The app defaults to 3000
+    # too; it is stated so the two cannot drift apart silently.
+    PORT: "3000"
+    # The OpenAPI document is a build-time artifact for the api's own pipeline
+    # (eventa-api/scripts/check-openapi.cjs); emitting it from a door-scan pod
+    # costs boot time and publishes a surface this pool does not serve.
+    EMIT_OPENAPI: "false"
+
+# ---------------------------------------------------------------------------
+# Secrets (devops-infrastructure.md §5)
+# ---------------------------------------------------------------------------
+# The only path a credential takes into these pods. The reference — the path and
+# key — is all that is in Git; the External Secrets Operator materialises the
+# Secret at runtime. The path itself is per-environment (`/eventa/<env>/*`), so
+# `dataFrom` lives in values-<env>.yaml.
+#
+# This pool reads the api's secret path rather than one of its own, because it
+# is the api process and needs the same database, Redis and JWT credentials. A
+# duplicate `/eventa/<env>/checkin` copy of the same values would have to be
+# rotated twice and would drift the first time somebody rotated only one — §5
+# makes rotation zero-touch, and two copies is how that stops being true.
+externalSecret:
+  enabled: true
+
+# ---------------------------------------------------------------------------
+# Autoscaling (devops-infrastructure.md §3.2, §6)
+# ---------------------------------------------------------------------------
+# §3.2 fixes this pool's signals as CPU + RPS + a custom check-in queue-depth
+# metric, with a prod floor of 2 that "scales hard for events".
+#
+# READ THIS BEFORE A PROD SYNC: the two custom metrics below name series that
+# nothing emits yet. eventa-api/src/modules/metrics/metrics.service.ts registers
+# only the two outbox gauges plus prom-client's defaults — no HTTP counter, no
+# check-in gauge — and no document names the Prometheus adapter that would have
+# to serve them to the metrics API. An HPA that cannot read a metric does not
+# merely ignore it: the controller reports FailedGetPodsMetric with
+# ScalingActive=False and declines to scale IN while the metric is unreadable,
+# so the pool parks at whatever high-water mark the CPU signal took it to and
+# stays there, which is a FinOps problem (§8) rather than an outage. Ship the
+# adapter rule and the app-side metric with this chart, or run prod on the CPU
+# target alone until they exist — see README.md, "The two metrics that do not
+# exist yet".
+hpa:
+  enabled: true
+  # §3.2's prod minimum. §6 adds "never 0 for prod services", and 2 is also the
+  # floor the PodDisruptionBudget's 50% needs to allow any voluntary disruption
+  # at all.
+  minReplicas: 2
+  # §6 asks for a ceiling and names no number. This one is ten times the floor:
+  # 20 pods × 500m of requests is 10 CPUs of reservation, which the cluster
+  # autoscaler has to be able to find before a door rush needs it (§6, "separate
+  # node pool can back the burstable check-in pool"). Raise it with the node
+  # pool, not before — an unreachable ceiling autoscales into Pending pods.
+  maxReplicas: 20
+  cpu:
+    # Left at the library's 70%. The burst headroom for a door rush comes from
+    # the scale-up behaviour below and from the 4× gap between request and
+    # limit, not from a lower target: a lower target would hold idle capacity
+    # all night for a surge that happens at the gate opening.
+    targetAverageUtilization: 70
+  metrics:
+    # RPS, per §3.2. A per-pod request rate is the shape the HPA wants (it
+    # divides the pool's load by the pods serving it), and a Pods metric keeps
+    # the reference out of the Ingress's templated name. The series has to be
+    # exposed to the custom-metrics API for the pods of this Deployment; the
+    # name follows the `eventa_` prefix the api already uses for its own gauges.
+    # 50 req/s/pod is a starting point to tune from Prometheus (§3.3).
+    - type: Pods
+      pods:
+        metric:
+          name: eventa_http_requests_per_second
+        target:
+          type: AverageValue
+          averageValue: "50"
+    # The custom check-in signal §3.2 requires and §6 describes as a
+    # "custom scan-throughput metric". Queue depth rather than rate because a
+    # door rush is a queue of people: the number that matters is how many scans
+    # are waiting, and it rises before CPU does, which is the whole reason this
+    # pool is autoscaled on something other than CPU.
+    - type: Pods
+      pods:
+        metric:
+          name: eventa_checkin_scan_queue_depth
+        target:
+          type: AverageValue
+          averageValue: "20"
+  behavior:
+    # §3.2's "scales hard for events", within §6's "stabilization windows to
+    # avoid flapping". The two halves are deliberately asymmetric.
+    scaleUp:
+      # No window at all: a gate opening is a step change, and the library's
+      # 60s default would hold the pool flat through the first minute of it —
+      # the minute with the longest queue. Nothing is risked by reacting
+      # immediately, because scale-up only ever adds capacity.
+      stabilizationWindowSeconds: 0
+      policies:
+        # Doubling every 30s, or eight pods at a time, whichever is larger.
+        # From the floor of 2 that reaches the ceiling of 20 in about 90s,
+        # which is the order of magnitude a door queue forms in.
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+        - type: Pods
+          value: 8
+          periodSeconds: 30
+      selectPolicy: Max
+    scaleDown:
+      # Ten minutes, twice the library's default, because an event's doors open
+      # per session: the lull between two sessions looks exactly like the end
+      # of the rush, and giving the capacity back in it means re-acquiring nodes
+      # for the next one. §6 calls this flapping and asks for it not to happen.
+      stabilizationWindowSeconds: 600
+      policies:
+        # A quarter of the pool every two minutes. Scaling in is never urgent,
+        # and a gentler step keeps the PDB from blocking it.
+        - type: Percent
+          value: 25
+          periodSeconds: 120
+      selectPolicy: Max
+
+# ---------------------------------------------------------------------------
+# Rollout (devops-ci-cd.md §4.2, devops-infrastructure.md §3.3)
+# ---------------------------------------------------------------------------
+# §4.2 gives this pool "Rolling (surge-friendly)" — explicitly distinct from the
+# api's canary, because it holds no long-lived state and is a burst workload.
+# §3.3's default of `maxSurge: 1` is what makes the distinction worth stating:
+# replacing a 20-pod pool one pod at a time takes twenty readiness cycles, so a
+# routine deploy would overlap the next door rush. A proportional surge replaces
+# it in four. `maxUnavailable` stays at 0, so a rollout can never reduce the
+# capacity the HPA just decided was needed.
+updateStrategy:
+  rollingUpdate:
+    maxSurge: 25%
+    maxUnavailable: 0
+
+# ---------------------------------------------------------------------------
+# Ingress (devops-infrastructure.md §3.3, §2)
+# ---------------------------------------------------------------------------
+# §3.3 allows ingress to web, api and checkin. The door needs it: the scanners
+# are the organizer's own phones and tablets on venue wifi, not pods in this
+# cluster.
+#
+# The hostname is per-environment and lives in values-<env>.yaml; this chart's
+# guards refuse to render an enabled Ingress with no host, because that object
+# applies cleanly and routes nothing. This is not the edge — CDN → WAF → load
+# balancer sit in front of it (§2), which is where TLS, the OWASP rules and the
+# rate limits are.
+ingress:
+  enabled: true
+
+# ---------------------------------------------------------------------------
+# Network (devops-infrastructure.md §3.3)
+# ---------------------------------------------------------------------------
+# §3.3's allow-list, read literally for this workload: "ingress → web/api/
+# checkin" and "api/checkin/worker/relay → Postgres/Redis/RabbitMQ". Everything
+# else in the namespace stays denied by the namespace-wide default-deny, which
+# this chart does NOT own — see README.md.
+#
+# The data stores are managed services in private data subnets (§2), not pods,
+# so each allow is an ipBlock whose CIDR is a Terraform network-module output.
+# They are supplied per environment under `global.eventa.network.*`; enabling a
+# store here with no CIDR anywhere is a render error in the library, because a
+# NetworkPolicy rule with an empty peer list allows every destination instead of
+# none.
+networkPolicy:
+  ingress:
+    # The door is a public surface: scanners are the organizer's own phones and
+    # tablets on venue wifi, reaching this pool through CDN → WAF → load
+    # balancer → the ingress controller in `platform` (§2, §3.1).
+    fromIngressController:
+      enabled: true
+  egress:
+    # The system of record, read and written by every scan, and the only
+    # dependency the readiness endpoint actually asserts — so a missing allow
+    # here fails the pool closed, with no replica ever Ready.
+    postgres:
+      enabled: true
+    # Needed before the first scan, not during it: the door staff sign in, and
+    # sign-in throttling is Redis-backed
+    # (eventa-api/src/modules/auth/login-throttle.service.ts; ADR-6 also puts
+    # idempotency keys and rate-limit counters there). Because readiness does
+    # not check Redis, a missing allow here is NOT caught by a probe — it
+    # surfaces as staff unable to log in at the gate.
+    redis:
+      enabled: true
+    # Implemented because §3.3 lists "api/checkin/worker/relay →
+    # Postgres/Redis/RabbitMQ", and the spec is the source of truth here.
+    # Recorded as dormant so that whoever tightens this policy knows which it
+    # is rather than guessing: nothing under eventa-api/src imports amqplib.
+    # That is the transactional outbox doing its job — an api-side event is a
+    # Postgres row and the relay is what talks to the broker (SAD §5, §7.2) —
+    # so this image opens no AMQP connection today.
+    rabbitmq:
+      enabled: true
+    # Deliberately off, and worth the paragraph. §3.3's last egress clause is
+    # "egress to Stripe/PromptPay/comms via NAT only", and it names no
+    # workloads. This pool runs the image that can serve checkout, but the only
+    # routes pointed at it are the door's
+    # (eventa-api/src/modules/check-in/check-in.controller.ts), and none of them
+    # calls a payment provider or a comms gateway. Leaving it closed means that
+    # if somebody ever routes checkout traffic here, it fails loudly at the
+    # first Stripe call instead of quietly becoming a second checkout pool with
+    # a door-scan autoscaler. Flip it on in the same change that gives this
+    # pool a payment route, not before.
+    #
+    # Object storage is closed for the same reason and does not need opening:
+    # uploads go browser → bucket through a presigned URL, so the bytes never
+    # pass through this process (eventa-api/src/config/env.validation.ts), and
+    # the door flows read no object.
+    external:
+      enabled: false

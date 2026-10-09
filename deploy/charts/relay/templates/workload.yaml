@@ -1,0 +1,17 @@
+{{/*
+The whole chart.
+
+`eventa-library.workload` renders the ServiceAccount, ConfigMap, ExternalSecret,
+Deployment, PodDisruptionBudget and NetworkPolicy for this workload; which of
+them appear is decided by values, which is the point of the shared library
+(devops-infrastructure.md §1.2). The relay turns off the Service, the Ingress,
+the HPA and the migration Job, so what comes out is a ConfigMap, an
+ExternalSecret, a ServiceAccount, a one-replica Deployment, a PDB and a
+NetworkPolicy.
+
+The guard runs first and emits nothing. It fails the render if anybody turns the
+singleton off — see `_guard.tpl` for the reader that cannot be scaled yet and
+the file:line that says when it can be.
+*/}}
+{{- include "relay.guard" . -}}
+{{- include "eventa-library.workload" . }}

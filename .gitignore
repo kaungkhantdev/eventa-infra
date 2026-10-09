@@ -15,3 +15,16 @@ charts/**/charts/
 *.pem
 *.key
 kubeconfig*
+
+# Helm dependency artefacts.
+#
+# Every service chart depends on `file://../_library` in this same repo, so the
+# vendored copy under `charts/` is a 37 KB tarball of a directory already
+# tracked here — five identical duplicates that go stale the moment _library is
+# edited. `Chart.lock` pins a digest of that same local path, so it churns on
+# every library change and pins nothing a reader could not see.
+#
+# Both are rebuilt by `helm dependency update <chart>`, which the chart READMEs
+# tell you to run before `helm template`.
+deploy/charts/*/charts/
+deploy/charts/*/Chart.lock

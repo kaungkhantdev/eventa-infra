@@ -1,0 +1,47 @@
+# web — production overlay. Namespace `eventa-prod` (devops-infrastructure.md
+# §3.1): live tenants, real PDPA-governed data, gated manual sync (§7,
+# devops-ci-cd.md §4.1).
+#
+# The shortest of the four overlays on purpose. values.yaml already carries the
+# prod baseline from §3.2 and §3.3 — 3 replicas minimum, 250m/1000m CPU,
+# 512Mi/1Gi memory, CPU + RPS autoscaling — so there is nothing to repeat here.
+# What is left is the pinned image and the public hostname.
+
+image:
+  # Set by the gated promotion PR a release manager approves (devops-ci-cd.md
+  # §4.1, §8.1: reverting this line is how a rollback happens, which is why it
+  # is a SHA and not an alias).
+  tag: sha-0000000
+
+ingress:
+  hosts:
+    # REPLACE THIS BEFORE THE FIRST PRODUCTION SYNC.
+    #
+    # No document in eventa-docs names the production hostname. §2 puts CDN →
+    # WAF → public load balancer in front of this Ingress, so the public name is
+    # a DNS and edge decision that belongs to the Terraform `edge` and DNS
+    # modules in §1.1 — neither of which has been written, and neither of which
+    # this chart may guess at. `pr-<n>.preview.eventa.dev` (devops-ci-cd.md
+    # §1.1) establishes the engineering domain used by the three non-prod
+    # overlays; it says nothing about the product's own domain.
+    #
+    # `.invalid` is reserved by RFC 2606 and resolves nowhere, so a forgotten
+    # placeholder fails closed: production web is unreachable and somebody
+    # notices within minutes. A plausible-looking guess would instead serve a
+    # hostname nobody chose and look correct in review.
+    - host: www.eventa.invalid
+      paths:
+        - path: /
+          pathType: Prefix
+
+# Not set, and this is the place it would go: the workload-identity / IRSA
+# annotation that grants this namespace least-privilege access to
+# `/eventa/prod/*` in the secrets manager (§5, §1.1). The annotation key is
+# cloud-specific and §1.1 deliberately names the mechanism neutrally
+# ("IRSA/workload-identity") because no provider has been chosen, so writing one
+# here would bake a provider into the chart. web also has no secret to fetch
+# today (see values.yaml), so nothing is blocked by its absence — add both
+# together when it does.
+#
+# serviceAccount:
+#   annotations: {}

@@ -1,0 +1,92 @@
+# The ephemeral PR-preview project — declared, and deliberately unused.
+#
+# devops-infrastructure.md §3.1 lists `preview-<pr>` as one of the six
+# namespaces and devops-ci-cd.md §1.1 specifies how it is filled: an Argo CD
+# `ApplicationSet` with a PR generator renders a per-PR app on every PR open or
+# push, running the exact SHA-tagged images that PR's CI run built, against an
+# ephemeral Postgres/Redis/RabbitMQ, torn down on close.
+#
+# That ApplicationSet is NOT in this directory, and leaving it out is the point
+# of this file. Writing it today would produce a manifest that looks right in
+# review and does the wrong thing on apply, for three reasons that are all
+# outside argocd/:
+#
+#   1. No chart has a `values-preview.yaml`, and none of the five renders
+#      without an environment overlay — each refuses on its own guards (the
+#      api on a missing Prometheus address, checkin and worker on a missing
+#      image tag). So a preview Application has no values to point at, and
+#      writing one means deciding a preview's sizing, hostname, secret path
+#      and data-store addresses, which is chart work and not Argo CD's.
+#   2. Nothing in this repo deploys the ephemeral data stores §1.1 requires.
+#      The four parity environments reach managed Postgres/Redis/RabbitMQ in
+#      private data subnets by CIDR (§2); a preview is supposed to run its own
+#      as pods, which the library anticipates with
+#      `networkPolicy.egress.toPods` — but there is no chart for them, so there
+#      is nothing for a preview to connect to.
+#   3. The PR generator needs to know whose pull requests it is watching.
+#      devops-ci-cd.md §1 describes a single monorepo (`web/`, `api/`,
+#      `charts/`, `infra/`); this workspace is five separate repositories, so
+#      "the PR" is ambiguous and the answer is a decision nobody has recorded.
+#
+# This project is here so the namespace boundary and the reasoning live
+# somewhere findable, and so wiring previews later is adding one ApplicationSet
+# rather than also designing the policy it runs under.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: eventa-preview
+  namespace: platform
+spec:
+  description: Ephemeral per-PR preview environments (devops-infrastructure.md §3.1, devops-ci-cd.md §1.1). No ApplicationSet uses this project yet — see the comment in this file.
+
+  sourceRepos:
+    - https://github.com/kaungkhantdev/eventa-infra.git
+
+  destinations:
+    # A wildcard, because the namespace name carries the PR number. §3.1 writes
+    # it `preview-<pr>` and devops-ci-cd.md §1.1 writes it `preview-pr-<n>`;
+    # the two agree if `<pr>` is read as `pr-<n>`, which is also the form the
+    # library's own comments use.
+    #
+    # The wildcard stops at the prefix on purpose: it cannot match
+    # `eventa-prod`, so a preview Application with a mistyped destination fails
+    # to sync rather than landing in a parity environment.
+    - server: https://kubernetes.default.svc
+      namespace: preview-pr-*
+
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+
+  # The same kinds the parity environments allow. The two Argo Rollouts kinds
+  # are in the list because the api chart has no switch that turns its Rollout
+  # off — `deployment.enabled` is false there and the Rollout is
+  # unconditional — so a preview gets one whether or not a canary makes sense
+  # at one replica. What a `values-preview.yaml` would turn off is
+  # `canary.analysis.enabled`, since there is no Prometheus for a preview's
+  # gates to query.
+  namespaceResourceWhitelist:
+    - group: ""
+      kind: ConfigMap
+    - group: ""
+      kind: Service
+    - group: ""
+      kind: ServiceAccount
+    - group: apps
+      kind: Deployment
+    - group: batch
+      kind: Job
+    - group: autoscaling
+      kind: HorizontalPodAutoscaler
+    - group: policy
+      kind: PodDisruptionBudget
+    - group: networking.k8s.io
+      kind: Ingress
+    - group: networking.k8s.io
+      kind: NetworkPolicy
+    - group: external-secrets.io
+      kind: ExternalSecret
+    - group: argoproj.io
+      kind: Rollout
+    - group: argoproj.io
+      kind: AnalysisTemplate

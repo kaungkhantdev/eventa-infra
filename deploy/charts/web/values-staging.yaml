@@ -1,0 +1,25 @@
+# web — staging overlay. Namespace `eventa-staging` (devops-infrastructure.md
+# §3.1): prod-like, and the environment where DAST (OWASP ZAP), the performance
+# checks and the migration rehearsal run (§7, devops-ci-cd.md §4.1). Data is
+# anonymised, never raw prod PII (§7).
+
+environment: staging
+
+image:
+  # Auto-promoted here once dev is healthy (devops-ci-cd.md §4.1).
+  tag: sha-0000000
+
+# The autoscaling ceiling stays at prod's, because this is the environment §7
+# runs the perf checks in and a scale-out test against a lower ceiling measures
+# the ceiling rather than the service. The floor drops to 2 under §8's smaller
+# non-prod replica counts — a perf run drives the HPA upward from wherever it
+# starts, so the floor is the part that can safely be cheaper.
+hpa:
+  minReplicas: 2
+
+ingress:
+  hosts:
+    - host: staging.eventa.dev
+      paths:
+        - path: /
+          pathType: Prefix

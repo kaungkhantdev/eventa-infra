@@ -1,0 +1,43 @@
+# worker — the RabbitMQ consumers: notifications, calendar, indexing
+# (devops-infrastructure.md §3.2), scaling on CPU and queue depth.
+#
+# It keeps typed mirrors of tables `eventa-api` owns, so the migration that a
+# mirror depends on must land in an earlier release than the mirror that uses
+# it (devops-ci-cd.md §5.2, and warning 3 in the repository README). Argo CD
+# cannot order this Application against the api's — see README.md, "What sync
+# waves can and cannot order here".
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  # The Application name carries the environment because all four environments'
+  # Applications live in the one `platform` namespace (§3.1); the Helm release
+  # name below deliberately does not.
+  name: eventa-staging-worker
+  namespace: platform
+spec:
+  project: eventa-staging
+
+  source:
+    repoURL: https://github.com/kaungkhantdev/eventa-infra.git
+    targetRevision: main
+    path: deploy/charts/worker
+    helm:
+      # Not the Application name — see ../../README.md, "Release names".
+      releaseName: worker
+      # Helm always reads the chart's own values.yaml as the base, so only the
+      # overlay is listed. devops-infrastructure.md §1.2 makes this pair the
+      # unit of deployment, and the image tag inside the overlay is what a
+      # promotion moves — which is why there are no `helm.parameters` here.
+      valueFiles:
+        - values-staging.yaml
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: eventa-staging
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

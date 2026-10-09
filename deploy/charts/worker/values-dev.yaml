@@ -1,0 +1,80 @@
+# worker — dev (namespace `eventa-dev`, devops-infrastructure.md §3.1/§7).
+#
+# §7: the continuous-integration target, synthetic data, no real PII, all
+# engineers. This is the one environment where the shape genuinely changes
+# rather than just the sizing, and it changes in exactly three places: mail goes
+# nowhere, the queue-depth autoscaler is off, and the ceiling is low.
+
+environment: dev
+
+image:
+  # ci-cd §4.1: auto-sync on merge to main, so this line moves on every merge.
+  # See values-prod.yaml for the placeholder.
+  tag: sha-0000000
+
+serviceAccount:
+  # `/eventa/dev/*` only — see values-prod.yaml.
+  annotations: {}
+
+externalSecret:
+  dataFrom:
+    - extract:
+        key: /eventa/dev/worker
+
+config:
+  env:
+    # The one environment that is not production-like, and it has to be stated
+    # because the image is promoted by digest (ci-cd §3) and so carries no
+    # environment of its own. It unlocks EMAIL_PROVIDER=log below, which
+    # eventa-worker refuses under `production`
+    # (src/config/env.validation.ts:148).
+    NODE_ENV: development
+    LOG_LEVEL: debug
+    # §7 allows no real PII here, and dev's seed data contains addresses that
+    # look real enough to mail. `log` records that a message was sent and drops
+    # it, so there is no credential in the namespace and no way to mail a real
+    # attendee by accident (src/config/env.validation.ts:98).
+    EMAIL_PROVIDER: log
+  # EMAIL_FROM and PUBLIC_WEB_URL are deliberately absent. Nothing is delivered,
+  # so a sender identity would be decoration; and eventa-worker declines the
+  # post-event thank-you job with a reason when PUBLIC_WEB_URL is unset
+  # (src/config/env.validation.ts:55) rather than writing a dead link into a
+  # message — the correct behaviour for an environment that sends no mail.
+
+hpa:
+  # See values-staging.yaml for why the floor stays at 2 and only the ceiling
+  # moves. §8 also scales non-prod down outside working hours; that is the
+  # cluster autoscaler's job against this ceiling, not a value here.
+  maxReplicas: 2
+  # Clears the queue-depth metric from values.yaml, leaving CPU alone.
+  #
+  # Not a simplification — a correctness fix for this environment. An external
+  # metric the Prometheus adapter cannot resolve does not merely report
+  # <unknown>: while any metric read is failing the HPA stops scaling IN
+  # altogether. Dev has no committed adapter rule publishing
+  # `rabbitmq_queue_messages` (no document names an adapter at all), so leaving
+  # it in would let one CI run's burst scale the worker out and pin it there —
+  # the exact opposite of §8's "non-prod scales down/off outside working hours".
+  #
+  # Add it back the same day the adapter rule lands, so dev keeps testing the
+  # signal prod relies on.
+  metrics: []
+
+networkPolicy:
+  egress:
+    external:
+      # Nothing in this namespace dials out: mail is `log`, there is no SMS
+      # provider, and payments are the api's business. §3.3 declares egress to
+      # comms via NAT for the workloads that need it, and an allow carrying no
+      # traffic is just a hole nobody is watching.
+      enabled: false
+
+global:
+  eventa:
+    network:
+      # PLACEHOLDER — Terraform network module output for dev. See
+      # values-prod.yaml for why one supernet covers all three stores and for
+      # what a wrong value costs.
+      postgresCidrs: ["10.10.8.0/21"]
+      redisCidrs: ["10.10.8.0/21"]
+      rabbitmqCidrs: ["10.10.8.0/21"]

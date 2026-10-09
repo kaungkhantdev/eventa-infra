@@ -1,0 +1,15 @@
+{{/*
+The whole chart.
+
+devops-infrastructure.md §1.2 asks for the shared templates — probes, PDB,
+NetworkPolicy, ExternalSecret, HPA — to live in one library chart "to keep the
+services consistent", and web needs nothing the library does not already emit.
+That is why this file is one line: a change to a probe or a disruption budget
+happens in ../_library and reaches all five workloads at once.
+
+The api is the chart that cannot do this, because it renders its own Argo
+Rollout for the canary (devops-ci-cd.md §4.2) and embeds
+`eventa-library.podTemplate` instead.
+*/}}
+{{- include "eventa-web.guards" . -}}
+{{- include "eventa-library.workload" . }}

@@ -1,0 +1,92 @@
+{{/*
+The canary gates (devops-ci-cd.md §4.2).
+
+"An automated AnalysisTemplate queries Prometheus at each step; the step must
+satisfy all gates before advancing, else the rollout aborts and rolls back."
+§4.2 tabulates the thresholds — 5xx rate ≤ 1% and not above baseline + 0.5pp,
+p95 latency on checkout endpoints ≤ 1.2× baseline, zero restarts attributable to
+the new revision, no new high-frequency Sentry signature, synthetic checkout
+probe passing.
+
+The gates themselves live in `values.yaml` and are passed through verbatim, the
+same way the library passes `hpa.metrics` through and for the same reason: §4.2
+fixes the thresholds, but the PromQL that measures them depends on series names
+that belong to the scrape config of whichever Prometheus an environment runs,
+and no document names one. A query invented in a template would be wrong
+invisibly; a query in values is read, reviewed and corrected by the person who
+owns that Prometheus.
+
+What this template adds is the wiring that must not vary: the run-time knobs
+default from one place, and the Prometheus address is supplied once per
+environment rather than repeated in every gate.
+*/}}
+{{- $v := fromYaml (include "api.values" .) -}}
+{{- if and $v.rollout.enabled $v.canary.analysis.enabled -}}
+{{- $cfg := $v.canary.analysis -}}
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: {{ include "api.analysisTemplateName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "eventa-library.labels" . | nindent 4 }}
+  {{- with include "eventa-library.mergedAnnotations" (dict "ctx" . "extra" dict) }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with $cfg.args }}
+  {{- /*
+    The argument names the queries interpolate. Declared here without values;
+    the Rollout's analysis step supplies each one per run (rollout.yaml), which
+    is where `valueFrom.podTemplateHashValue` can be resolved. An arg given a
+    literal `value` in values keeps it as a default.
+  */}}
+  args:
+    {{- range $arg := . }}
+    - name: {{ $arg.name }}
+      {{- with $arg.value }}
+      value: {{ . | quote }}
+      {{- end }}
+    {{- end }}
+  {{- end }}
+  {{- /*
+    Assembled as data and serialised once, rather than indented by hand per
+    entry: a gate gains a `provider.web.headers` list the moment somebody wires
+    up the Sentry check, and a hand-indented fragment nests that wrongly in a
+    way that still parses.
+  */}}
+  {{- $metrics := list -}}
+  {{- range $metric := $cfg.metrics -}}
+    {{- $m := deepCopy $metric -}}
+    {{- /*
+      Run-time knobs default from canary.analysis so that "five one-minute
+      measurements, abort on the first failure" is stated once rather than per
+      gate, while a gate that genuinely needs its own window (a synthetic probe
+      that is slower than a scrape interval) can still say so.
+    */ -}}
+    {{- if not (hasKey $m "interval") }}{{- $m = set $m "interval" $cfg.interval }}{{- end -}}
+    {{- if not (hasKey $m "count") }}{{- $m = set $m "count" $cfg.count }}{{- end -}}
+    {{- if not (hasKey $m "failureLimit") }}{{- $m = set $m "failureLimit" $cfg.failureLimit }}{{- end -}}
+    {{- if not (hasKey $m "inconclusiveLimit") }}{{- $m = set $m "inconclusiveLimit" $cfg.inconclusiveLimit }}{{- end -}}
+    {{- /*
+      One address per environment, filled in for any Prometheus gate that does
+      not carry its own. Five gates repeating the same URL is five places for it
+      to go stale, and a gate pointed at a dead Prometheus does not fail open —
+      it errors, and with failureLimit 0 it aborts a deploy for a reason that
+      has nothing to do with the build.
+    */ -}}
+    {{- $provider := deepCopy ($m.provider | default dict) -}}
+    {{- if and (hasKey $provider "prometheus") $cfg.prometheusAddress -}}
+    {{- $prom := deepCopy (index $provider "prometheus") -}}
+    {{- if not (dig "address" "" $prom) -}}
+    {{- $prom = set $prom "address" $cfg.prometheusAddress -}}
+    {{- $provider = set $provider "prometheus" $prom -}}
+    {{- $m = set $m "provider" $provider -}}
+    {{- end -}}
+    {{- end -}}
+    {{- $metrics = append $metrics $m -}}
+  {{- end }}
+  metrics:
+    {{- toYaml $metrics | nindent 4 }}
+{{- end -}}

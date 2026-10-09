@@ -1,0 +1,41 @@
+# web — dev overlay. Namespace `eventa-dev` (devops-infrastructure.md §3.1):
+# the continuous-integration target, auto-synced on every merge to main
+# (devops-ci-cd.md §4.1), synthetic data and no real PII (§7).
+#
+# values.yaml carries the prod baseline. §7 holds the four environments to
+# parity — "same Terraform modules + Helm charts; environments differ only in
+# sizing, replica counts, retention, and data sensitivity" — so an overlay that
+# restated the baseline would be four copies of one file to keep in step. This
+# one states four keys.
+
+environment: dev
+
+image:
+  # The line the promotion bot bumps for this environment (devops-ci-cd.md
+  # §4.1). See values.yaml for why the placeholder has this shape.
+  tag: sha-0000000
+
+config:
+  env:
+    # Verbose in the one environment where somebody is reading the logs while
+    # the change is still fresh.
+    LOG_LEVEL: debug
+
+# §8 (FinOps) runs dev/staging/uat at smaller replica counts than prod, and §6
+# forbids a floor of 0 only for *prod* services. One replica integrates merged
+# trunk perfectly well; the ceiling is here because §6 requires every HPA to
+# have one, not because dev is expected to reach it.
+hpa:
+  minReplicas: 1
+  maxReplicas: 3
+
+ingress:
+  hosts:
+    # The only domain any document names is the preview one,
+    # `pr-<n>.preview.eventa.dev` (devops-ci-cd.md §1.1). The non-prod
+    # hostnames in these three overlays follow from it; stated once, here.
+    # Production's is not derivable the same way — see values-prod.yaml.
+    - host: dev.eventa.dev
+      paths:
+        - path: /
+          pathType: Prefix

@@ -1,0 +1,296 @@
+# relay — the baseline. Every environment renders this file plus exactly one
+# `values-<env>.yaml`; neither works alone and that is deliberate (see README).
+#
+# The numbers here are the production figures from devops-infrastructure.md §3.3
+# and they are not scaled down anywhere. §8 shrinks non-production environments
+# by cutting replica counts and instance sizes — the relay has neither to cut: it
+# is one replica of 100m/256Mi in every environment, which is already the
+# smallest thing on the cluster. So the per-environment files carry only the
+# references that genuinely differ (the pinned image, the secret path, the data
+# subnets, the environment name) and nothing that is merely re-stated.
+#
+# Everything this chart renders comes from the `_library` chart. Read
+# ../_library/templates/_defaults.tpl for the full contract; this file states
+# only what differs from it.
+
+# devops-infrastructure.md §3.2. Becomes app.kubernetes.io/component, and it is
+# what tells the five workloads apart on a dashboard and in a NetworkPolicy.
+component: relay
+
+image:
+  # devops-ci-cd.md §3 fixes a private in-region registry but names no host, and
+  # no cloud provider has been chosen, so the host is the one thing here that a
+  # real deployment will want to change. The image itself is fixed: §0 of that
+  # document ships exactly four, and `relay` is one of them.
+  repository: registry.eventa.internal/eventa/relay
+  # No tag on purpose. devops-ci-cd.md §3 requires an immutable git-SHA tag and
+  # §1.3 has CI's bot commit that tag into the target environment's values, so
+  # the tag belongs in `values-<env>.yaml` where promotion moves it — never
+  # here, where a stale default would quietly become the version that ships. The
+  # library fails the render when neither tag nor digest is set.
+
+# devops-ci-cd.md §4.3 fixes the order: wave 1 is the migration Job, wave 2 is
+# api/worker/relay, wave 3 is web. The relay must not start publishing events
+# whose payload shape a wave-1 migration has not landed yet.
+argocd:
+  syncWave: "2"
+
+# devops-infrastructure.md §3.3. The relay is the smallest of the five: it holds
+# one batch of rows in memory and one AMQP channel, and it does no request
+# serving at all, so it is sized an order below api.
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# ---------------------------------------------------------------------------
+# The singleton. Read templates/_guard.tpl before touching anything below.
+# ---------------------------------------------------------------------------
+# This is the one place where the chart knowingly contradicts the specification.
+# devops-infrastructure.md §3.2 tabulates relay at a minimum of 2 replicas; the
+# reader that entry describes does not exist. `fetchBatch` takes no row lock, so
+# two replicas select the same rows and publish every event twice, and consumers
+# dedupe only after the first copy has finished — so both concurrent copies are
+# handled and one registration sends the buyer two confirmation emails.
+#
+# Setting this does four things in the library: the Deployment writes
+# `replicas: 1` as a literal that no `--set` or Argo CD parameter can raise, no
+# HPA is rendered, `hpa.enabled: true` fails the render, and the rollout is
+# forced to maxSurge=0 / maxUnavailable=1. The relay chart adds a fifth: turning
+# this off fails the render too.
+singleton:
+  enabled: true
+  reason: "fetchBatch takes no row lock, so a second replica selects the same outbox rows and publishes every event twice. Consumers dedupe only after the first copy completes."
+  # Where to check whether the guard can be lifted. If this line now reads
+  # `FOR UPDATE SKIP LOCKED`, the relay can be scaled — see README.md.
+  evidence: "eventa-relay/src/relay/outbox-reader.repository.ts:25"
+
+# Deliberately redundant: the Deployment writes the literal `1` and ignores this
+# value entirely. It is here because this is the first place somebody trying to
+# match §3.2's "2" will edit, and the library's guard reads the chart's own
+# values — so an edit here fails the render with the reason instead of silently
+# doing nothing and sending the next buyer two emails.
+replicas: 1
+
+# No autoscaler, at all. §6 lists "relay scales with outbox lag" and that is the
+# right design once the reader claims rows; until then an HPA's entire job would
+# be to create the replica that must not exist. Outbox lag is still the signal to
+# watch — devops-observability-sre.md §2 pages on it above 120s — it just wakes a
+# human rather than adding a publisher.
+hpa:
+  enabled: false
+
+# devops-infrastructure.md §3.3: "relay uses maxUnavailable: 0 behavior via
+# minAvailable: 1 to keep at least one publisher live." With a single replica
+# that is zero allowed voluntary disruptions, so `kubectl drain` on this node
+# blocks until an operator deletes the pod by hand. That is the trade the
+# document chose and it is the right one: a momentary gap in publishing is
+# recoverable because the outbox row survives (devops-ci-cd.md §5.3), while two
+# concurrent publishers are not.
+pdb:
+  minAvailable: 1
+
+# ---------------------------------------------------------------------------
+# No listening socket
+# ---------------------------------------------------------------------------
+# eventa-relay/src/main.ts:24 calls `NestFactory.createApplicationContext` — an
+# application context, not an HTTP server. There is no `listen`, no controller
+# and no port anywhere in eventa-relay/src, so the pod binds nothing. Declaring
+# a container port here would be a claim about the process that is simply false,
+# and `kubectl describe pod` is where someone would read it and believe it.
+ports: []
+
+# Nothing addresses the relay. It is not in §3.3's ingress list, nothing calls
+# it, and it has no port to route to — a Service would be an endpoint-less
+# object that only invites someone to point something at it.
+service:
+  enabled: false
+
+# devops-observability-sre.md §1 has all five workloads scraped on `/metrics`,
+# and this is the one that cannot be: there is no server to scrape (see `ports`
+# above), so the scrape annotation would advertise a target that never answers
+# and show up as a permanently down target rather than as missing data.
+#
+# §2 anticipates this: it sources outbox lag from a "relay gauge / DB query
+# exporter", and with no relay gauge the exporter is the path. It is the better
+# signal anyway — it measures the lag from the database, so it still fires when
+# the relay is gone, which a metric the relay serves cannot. Turn this on, with a
+# port, the day eventa-relay exposes one.
+metrics:
+  enabled: false
+
+# ---------------------------------------------------------------------------
+# Probes — off, and this is the considered answer, not an omission
+# ---------------------------------------------------------------------------
+# devops-infrastructure.md §3.3 sends the relay to "exec/TCP checks (no HTTP
+# server) plus broker-connection health", and devops-ci-cd.md §4.3 says the
+# relay's check is that "it can read the outbox and reach RabbitMQ". That is
+# exactly the right probe. eventa-relay does not ship it: there is no health
+# module, no CLI entrypoint and no second binary in the image — `pnpm
+# start:prod` is `node dist/main` and nothing else.
+#
+# A TCP probe is impossible (nothing listens). An exec probe needs a command
+# that exists, and the two tempting substitutes are both worse than no probe:
+#
+#   * Pointing exec at a CLI that is not in the image yet. Readiness would never
+#     pass, and because a singleton rolls with maxSurge=0 the old publisher is
+#     deleted BEFORE the new one starts — so every deploy would leave the
+#     platform with zero publishers until progressDeadlineSeconds expires.
+#   * A command that cannot fail, such as `node -e ''`. The kubelet already
+#     knows the container is running; a probe that re-asserts it reports health
+#     it never checked, and the relay's real failure — running but not
+#     publishing — would read as green on the dashboard.
+#
+# eventa-infra/README.md says the same thing as warning 2, and
+# eventa-relay/README.md:74 ends on it: "That query is the signal worth alerting
+# on — outbox lag, not process liveness." So the relay is watched from the
+# database (devops-observability-sre.md §2: warn above 30s, page above 120s) and
+# carries no probe that pretends otherwise.
+#
+# To turn them on once eventa-relay ships a readiness CLI, this is the whole
+# change — the library already supports it and validates it:
+#
+#   probes:
+#     readiness:
+#       enabled: true
+#       type: exec
+#       exec:
+#         command: ["node", "dist/health/readiness.js"]   # asserts DB + broker
+#       periodSeconds: 15
+#
+# Keep liveness off even then, unless the relay gains a check that can actually
+# distinguish a wedged event loop from a healthy one.
+probes:
+  readiness:
+    enabled: false
+  liveness:
+    enabled: false
+  startup:
+    enabled: false
+
+# devops-ci-cd.md §5.3 requires this to exceed the longest handler, because the
+# relay drains on SIGTERM. eventa-relay/src/main.ts:47-50 clears the poll timer
+# and closes the app, which closes the AMQP channel and ends the pg pool
+# (rabbit-publisher.ts:84, database.module.ts:36). The bound is one in-flight
+# pass: up to OUTBOX_BATCH publishes, each a `waitForConfirms` plus an UPDATE.
+#
+# Correctness does not depend on finishing it — a row is marked published only
+# after its confirm returns, so anything cut off is still `published_at IS NULL`
+# and goes out on the next pass (rabbit-publisher.ts:70-76). This budget is
+# therefore about not SIGKILLing a confirm mid-flight, which would leave a
+# published message unmarked and so delivered twice after the restart.
+terminationGracePeriodSeconds: 60
+
+# ---------------------------------------------------------------------------
+# Configuration — devops-infrastructure.md §5
+# ---------------------------------------------------------------------------
+# Non-secret only; this renders to a ConfigMap that is committed to Git. The
+# keys are eventa-relay's whole env surface except the two credentials, which are
+# below in `externalSecret` (eventa-relay/src/config/env.validation.ts).
+config:
+  env:
+    # The Node runtime mode, which is not the environment's name. It is
+    # `production` in every deployed namespace including eventa-dev, because
+    # what runs there is a production build of the image; §7's environment
+    # identity travels in `environment` and in the OTEL attributes instead.
+    NODE_ENV: production
+    LOG_LEVEL: info
+    # Must match what eventa-worker binds its queues to — the relay publishes to
+    # this topic exchange and nothing else reads its output
+    # (eventa-relay/README.md:51). Changing it here without changing the
+    # consumers silently strands every event.
+    RABBITMQ_EXCHANGE: eventa.events
+    # The poll loop. 1s is eventa-relay's own default and it sets the floor on
+    # outbox lag, which devops-observability-sre.md §2 warns on above 30s — so
+    # there is three orders of magnitude of headroom and no reason to tune it
+    # per environment.
+    OUTBOX_POLL_MS: 1000
+    # Rows per pass. It also bounds the drain above: a larger batch publishes
+    # more per tick and takes longer to finish on SIGTERM.
+    OUTBOX_BATCH: 100
+
+# devops-infrastructure.md §5: the only path a secret takes into a pod. Git holds
+# the reference, never the value, and the per-environment path keeps a dev pod
+# from reading prod credentials.
+#
+# The relay needs exactly two: DATABASE_URL and RABBITMQ_URL. It holds no JWT
+# secret, no Stripe key and no SMTP credentials (eventa-relay/README.md:55), so
+# the blast radius of this Secret is a database connection and a broker
+# connection. `dataFrom` is per-environment and lives in `values-<env>.yaml`.
+externalSecret:
+  enabled: true
+
+# eventa-api owns every migration; the relay keeps a typed mirror of the one
+# table it touches and creates nothing (eventa-relay/src/db/schema/outbox.ts:12).
+# The gated pre-deploy Job belongs to the api chart (devops-ci-cd.md §5.1), and a
+# second Job racing it in wave 1 is exactly the ordering problem
+# eventa-infra/README.md records as warning 3.
+migrationJob:
+  enabled: false
+
+# ---------------------------------------------------------------------------
+# Network — devops-infrastructure.md §3.3
+# ---------------------------------------------------------------------------
+# Default-deny per namespace, then only what is declared. For the relay the
+# declared set is small enough to state exhaustively: out to Postgres, out to
+# RabbitMQ, out to DNS to resolve them, and nothing in.
+networkPolicy:
+  enabled: true
+
+  # The namespace-wide default-deny object is owned by one release per namespace
+  # and that release is `api`, which runs in every namespace that runs anything.
+  # Two charts enabling it would be additive rather than harmful, but it would
+  # also be two Argo CD Applications claiming one object.
+  defaultDeny:
+    enabled: false
+
+  ingress:
+    # §3.3 admits ingress to web/api/checkin only. Nothing reaches the relay:
+    # with the metrics scrape off as well, the rendered policy declares the
+    # Ingress type with an empty rule list, which denies every inbound
+    # connection rather than leaving the direction unmanaged.
+    fromIngressController:
+      enabled: false
+
+  egress:
+    # Postgres. The relay reads `outbox_events` where `published_at IS NULL` and
+    # sets `published_at` — two columns of one table
+    # (eventa-relay/src/db/schema/outbox.ts:16-18). It writes to the PRIMARY, not
+    # the read replica of §4, because marking a row published is a write.
+    #
+    # The CIDR is per-environment and comes from the Terraform network module's
+    # data-subnet output (§1.1, §2) — a managed service in a private subnet is
+    # not a pod, so the allow is an ipBlock and cannot be a podSelector. Enabled
+    # here with no CIDR on purpose: the library refuses to render an egress rule
+    # with an empty peer list, because such a rule allows every destination
+    # instead of none.
+    postgres:
+      enabled: true
+      cidrs: []
+
+    # No Redis. §3.3's list groups the relay with api/checkin/worker for all
+    # three data stores, but eventa-relay's env schema has no REDIS_URL and the
+    # service holds no cache, session or idempotency state
+    # (eventa-relay/src/config/env.validation.ts:11-27). An allow it never uses
+    # is reachability nobody audits, and §3.3's own rule is that nothing
+    # undeclared is permitted.
+    redis:
+      enabled: false
+
+    # RabbitMQ, the one thing the relay writes to besides the outbox table. The
+    # library's port default is 5671 (AMQP over TLS) and the broker is a managed
+    # clustered service in a data subnet (§4), so RABBITMQ_URL must be an
+    # `amqps://` URL for this allow to match the connection it opens.
+    rabbitmq:
+      enabled: true
+      cidrs: []
+
+    # No egress to the internet. §3.3 allows Stripe/PromptPay/comms through NAT
+    # for the workloads that call them; the relay calls none. It publishes an
+    # event and the worker is what talks to the comms providers — which is the
+    # reason the relay is given no credentials it could leak.
+    external:
+      enabled: false

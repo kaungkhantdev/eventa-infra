@@ -1,0 +1,44 @@
+# relay — dev (namespace `eventa-dev`, devops-infrastructure.md §3.1/§7).
+#
+# The continuous-integration target: auto-synced on every merge to main (§7,
+# devops-ci-cd.md §4.1) against synthetic seeded data with no real PII. Rendered
+# on top of values.yaml, which already carries the sizing — the relay is not
+# scaled down here because there is nothing below one replica of 100m/256Mi.
+
+image:
+  # Bumped automatically by CI on every merge to main (devops-ci-cd.md §1.3,
+  # §4.1), which is why dev is the environment whose tag moves most often.
+  # PLACEHOLDER until the pipeline writes a real digest — all zeroes so it
+  # cannot be mistaken for a revision; see values-prod.yaml for why.
+  tag: sha-0000000
+
+environment: dev
+
+config:
+  env:
+    # The one behavioural difference between dev and production for this
+    # workload. §5 lists log level as per-environment ConfigMap config, and the
+    # relay logs a line per non-empty poll at `info`
+    # (eventa-relay/src/main.ts:37); at `debug` a developer chasing a stuck
+    # event can see the ticks that found nothing, which is the interesting case.
+    LOG_LEVEL: debug
+
+externalSecret:
+  # §5: `/eventa/dev/*`, scoped by workload identity so this pod cannot read the
+  # staging or production path even by asking for it.
+  dataFrom:
+    - extract:
+        key: /eventa/dev/relay
+
+# One CIDR per store rather than production's three: §8 runs the non-production
+# environments on single-node data services, so there is no standby in another
+# zone for the endpoint to fail over to. PLACEHOLDERS from the Terraform network
+# module (§1.1), which does not exist yet.
+networkPolicy:
+  egress:
+    postgres:
+      cidrs:
+        - 10.10.3.0/24
+    rabbitmq:
+      cidrs:
+        - 10.10.3.0/24

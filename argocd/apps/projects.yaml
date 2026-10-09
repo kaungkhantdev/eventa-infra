@@ -1,0 +1,40 @@
+# The AppProjects, as desired state.
+#
+# Every other Application in this tree names a project, and an Application
+# whose project is missing is rejected rather than queued — so these have to
+# exist before the per-environment roots beside this file are admitted. The
+# sync wave below is what guarantees that: Argo CD applies a wave and waits for
+# it to be healthy before starting the next, and an AppProject has no health
+# assessment, so it counts as healthy as soon as it is applied.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: eventa-projects
+  namespace: platform
+  annotations:
+    # Ahead of the four environment roots, which sit at the default wave 0.
+    # This is the only place in argocd/ where a sync wave does real work — see
+    # README.md, "What sync waves can and cannot order here", for why the child
+    # Applications deliberately carry none.
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  project: platform
+
+  source:
+    repoURL: https://github.com/kaungkhantdev/eventa-infra.git
+    targetRevision: main
+    path: argocd/projects
+    directory:
+      recurse: false
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: platform
+
+  syncPolicy:
+    automated:
+      # A project is a boundary, so a boundary deleted from Git has to be
+      # deleted from the cluster — a stale AppProject left behind would keep
+      # permitting destinations that Git no longer declares.
+      prune: true
+      selfHeal: true

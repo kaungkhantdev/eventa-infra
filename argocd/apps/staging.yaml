@@ -1,0 +1,33 @@
+# staging's root: the Application that owns the five service Applications in
+# `argocd/environments/staging`.
+#
+# devops-ci-cd.md §4.1 auto-promotes staging once dev is healthy. That
+# "once dev is healthy" condition is not expressible here and is not meant to
+# be: it belongs to the CI job that writes the image tag into
+# `deploy/charts/<service>/values-staging.yaml` after dev has gone green. Argo
+# CD's part is to notice the commit and converge, which is what §1.3's
+# pull-based delivery means — the gate lives in the pipeline, never in a
+# credential handed to CI.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: eventa-staging
+  namespace: platform
+spec:
+  project: platform
+
+  source:
+    repoURL: https://github.com/kaungkhantdev/eventa-infra.git
+    targetRevision: main
+    path: argocd/environments/staging
+    directory:
+      recurse: false
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: platform
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

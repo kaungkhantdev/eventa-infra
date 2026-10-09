@@ -1,0 +1,142 @@
+{{/*
+The api's workload object: an Argo Rollout, not a Deployment.
+
+devops-ci-cd.md §4.2 assigns the api a canary — "10% → 25% → 50% → 100%,
+analysis at each step" — because it is "the integrity-critical,
+highest-blast-radius surface (checkout, payments, auth)". §4.3 adds that a
+failed gate aborts the rollout and pins the previous stable ReplicaSet, which is
+§8.1's automated rollback.
+
+The pod spec is `eventa-library.podTemplate`, unchanged from what the other four
+workloads run. A Rollout's `spec.template` is an ordinary pod template, so the
+canary costs this chart a strategy block and nothing else — which is the point
+of the library (devops-infrastructure.md §1.2).
+*/}}
+{{- $v := fromYaml (include "api.values" .) -}}
+{{- if $v.rollout.enabled -}}
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: {{ include "eventa-library.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "eventa-library.labels" . | nindent 4 }}
+    {{- with $v.rollout.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with include "eventa-library.mergedAnnotations" (dict "ctx" . "extra" $v.rollout.annotations) }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if not $v.hpa.enabled }}
+  replicas: {{ $v.replicas }}
+  {{- else }}
+  {{- /*
+    No `replicas` here, for the reason the library's Deployment template gives:
+    the HPA owns the field, and Argo CD runs with self-heal and drift detection
+    (devops-infrastructure.md §1.3), so a replica count committed to Git is
+    drift the moment the HPA scales out — and self-heal would scale the api back
+    down in the middle of the on-sale burst it just scaled up for (§6).
+
+    An HPA and a Rollout coexist by design: Argo Rollouts reads the replica
+    count the HPA has set and takes the canary weight as a share of it.
+  */}}
+  {{- end }}
+  revisionHistoryLimit: {{ $v.revisionHistoryLimit }}
+  progressDeadlineSeconds: {{ $v.progressDeadlineSeconds }}
+  {{- /*
+    §8.1: "failed health/readiness or canary-analysis gates make Argo Rollouts
+    abort and pin the last stable ReplicaSet; no human needed for the common
+    case." Without this, exceeding the progress deadline only marks the Rollout
+    degraded and leaves the canary pods taking their share of traffic until
+    somebody notices — a readiness failure that never resolves would sit at 10%
+    of checkout indefinitely rather than rolling back.
+  */}}
+  progressDeadlineAbort: true
+  selector:
+    matchLabels:
+      {{- include "eventa-library.podSelectorLabels" . | nindent 6 }}
+  template:
+    {{- include "eventa-library.podTemplate" . | nindent 4 }}
+  strategy:
+    canary:
+      {{- /*
+        The churn allowed inside a single step. devops-infrastructure.md §3.3's
+        rolling defaults (maxSurge 1, maxUnavailable 0) apply here: capacity
+        never dips below the desired count while a step scales.
+      */}}
+      maxSurge: {{ $v.rollout.maxSurge }}
+      maxUnavailable: {{ $v.rollout.maxUnavailable }}
+      {{- with $v.rollout.scaleDownDelaySeconds }}
+      scaleDownDelaySeconds: {{ . }}
+      {{- end }}
+      {{- with $v.rollout.abortScaleDownDelaySeconds }}
+      {{- /*
+        Keeps the aborted revision's ReplicaSet around briefly instead of
+        deleting it the instant a gate fails. §8.1 measures rollback in MTTR
+        (a DORA metric); re-pulling an image and cold-booting NestJS — which is
+        slow enough to need its own startup probe, §3.3 — is the difference
+        between a rollback that is a traffic shift and one that is a deploy.
+      */}}
+      abortScaleDownDelaySeconds: {{ . }}
+      {{- end }}
+      {{- with $v.rollout.canaryService }}
+      canaryService: {{ . }}
+      {{- end }}
+      {{- with $v.rollout.stableService }}
+      stableService: {{ . }}
+      {{- end }}
+      {{- with $v.rollout.trafficRouting }}
+      {{- /*
+        Only rendered when an environment supplies it. Empty by default: §4.2
+        fixes the canary percentages but no document chooses a service mesh or
+        an ingress provider, and naming one here would bake that decision into
+        the chart. With no trafficRouting, Argo Rollouts expresses the weight by
+        replica count — 10% of the pods run the new revision behind the one
+        Service this chart renders — which needs no mesh, no CNI choice, and no
+        second Service. The arithmetic is proportional rather than exact, so at
+        the prod floor of 3 replicas (§3.2) a 10% step is one pod of three.
+      */}}
+      trafficRouting:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      steps:
+        {{- range $weight := $v.canary.steps }}
+        - setWeight: {{ int $weight }}
+        {{- if $v.canary.analysis.enabled }}
+        - analysis:
+            templates:
+              - templateName: {{ include "api.analysisTemplateName" $ }}
+            {{- with $v.canary.analysis.args }}
+            {{- /*
+              Resolved per run by the Rollouts controller. `podTemplateHashValue`
+              is how a PromQL query tells the new revision's pods from the old
+              one's: every pod the controller creates carries
+              `rollouts-pod-template-hash`, so a query filtered on it compares
+              canary against the stable baseline rather than against the
+              service average — which is what §4.2's "canary vs baseline"
+              thresholds mean.
+            */}}
+            args:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+        {{- else }}
+        {{- /*
+          Analysis off (dev — see values-dev.yaml). A `setWeight` with nothing
+          after it advances immediately, so the steps become a formality rather
+          than a gate. That is acceptable where §4.1 auto-syncs synthetic data
+          and no Prometheus adapter is guaranteed, and `_validate.tpl` refuses
+          it for eventa-prod.
+        */}}
+        {{- end }}
+        {{- end }}
+        {{- /*
+          No step for 100%. After the last weight's analysis passes, the Rollout
+          promotes the canary ReplicaSet to the full replica count on its own.
+          A regression found after that point is outside the canary's reach and
+          §8.1 takes over: flip the feature flag, or revert the image digest in
+          the GitOps repo and let Argo CD reconcile back to the previous signed
+          digest.
+        */}}
+{{- end -}}

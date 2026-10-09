@@ -1,0 +1,44 @@
+# worker — the RabbitMQ consumers: notifications, calendar, indexing
+# (devops-infrastructure.md §3.2), scaling on CPU and queue depth.
+#
+# It keeps typed mirrors of tables `eventa-api` owns, so the migration that a
+# mirror depends on must land in an earlier release than the mirror that uses
+# it (devops-ci-cd.md §5.2, and warning 3 in the repository README). Argo CD
+# cannot order this Application against the api's — see README.md, "What sync
+# waves can and cannot order here".
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  # The Application name carries the environment because all four environments'
+  # Applications live in the one `platform` namespace (§3.1); the Helm release
+  # name below deliberately does not.
+  name: eventa-prod-worker
+  namespace: platform
+spec:
+  project: eventa-prod
+
+  source:
+    repoURL: https://github.com/kaungkhantdev/eventa-infra.git
+    targetRevision: main
+    path: deploy/charts/worker
+    helm:
+      # Not the Application name — see ../../README.md, "Release names".
+      releaseName: worker
+      # Helm always reads the chart's own values.yaml as the base, so only the
+      # overlay is listed. devops-infrastructure.md §1.2 makes this pair the
+      # unit of deployment, and the image tag inside the overlay is what a
+      # promotion moves — which is why there are no `helm.parameters` here.
+      valueFiles:
+        - values-prod.yaml
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: eventa-prod
+
+  syncPolicy:
+    # No `automated` block. devops-ci-cd.md §4.1 and devops-infrastructure.md
+    # §1.3 both gate the production sync on a human: a merged promotion leaves
+    # this Application OutOfSync until the release manager syncs it. See
+    # ../../apps/prod.yaml for why self-heal cannot also be on here.
+    syncOptions:
+      - CreateNamespace=true

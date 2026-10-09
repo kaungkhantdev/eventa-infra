@@ -1,0 +1,237 @@
+# worker — the production baseline.
+#
+# devops-infrastructure.md §3.2/§3.3 are the source of these numbers. This file
+# states only what differs from the library's defaults in
+# `_library/templates/_defaults.tpl`; anything absent here — the rolling
+# strategy, the zone anti-affinity, the hardened security context, the
+# `minAvailable: 50%` PodDisruptionBudget, the HPA stabilization windows — is
+# inherited, which is the point of the shared library (§1.2). README.md lists
+# what is inherited so the omissions are not mistaken for oversights.
+#
+# THIS FILE IS NOT DEPLOYABLE ON ITS OWN, deliberately. Three facts belong to an
+# environment and not to a baseline, so they are absent and the render fails
+# without them: the image SHA tag (§1.2 — Argo CD promotes by moving it), the
+# secrets-manager path (§5 — `/eventa/<env>/*`), and the data-subnet CIDRs
+# (§2 — Terraform network-module output). Always render with an environment
+# file: `helm template worker . -f values-prod.yaml -n eventa-prod`.
+
+component: worker
+
+image:
+  # ci-cd §3 keeps a private registry in-region; no document names the host, so
+  # this follows the placeholder the _library README already uses for the relay.
+  # The registry lives in Terraform's `global/` state (§1.1), one for all
+  # environments, which is why it is here and not in the per-environment files.
+  repository: registry.eventa.internal/eventa/worker
+  # Left empty on purpose. §1.2: "a values override sets image.tag=<git-sha>;
+  # Argo CD promotes an environment by moving that pinned tag." The GitOps bot
+  # writes it into values-<env>.yaml (ci-cd §2.1 stage 11), so a render with no
+  # environment file has no image and must fail rather than inherit one.
+  tag: ""
+
+argocd:
+  # ci-cd §4.3 fixes the order: wave 1 is the api's migration Job, wave 2 is
+  # api/worker/relay, wave 3 is web. The worker must not start before a schema
+  # it keeps a typed mirror of has been expanded (ci-cd §5.3, "migration ↔ event
+  # ordering") — the mirror fails on write, in production, not on read in CI.
+  syncWave: "2"
+
+# eventa-worker/src/config/env.validation.ts:9 defaults PORT to 3100, and
+# eventa-worker/src/main.ts:18 listens on it. Probes and the metrics scrape
+# address this by name, so the number appears once; `templates/_guards.tpl`
+# fails the render if config.env.PORT and this value ever drift apart.
+ports:
+  - name: http
+    containerPort: 3100
+    protocol: TCP
+
+service:
+  # Nothing in the cluster calls the worker: §3.3 routes ingress to web, api and
+  # checkin only, and the worker's HTTP port answers probes and /metrics and
+  # nothing else. The kubelet probes the pod IP directly and the Prometheus
+  # scrape follows the pod annotations, so a Service here would be an object
+  # with no consumer and a second name for the same pods on every dashboard.
+  enabled: false
+
+# devops-infrastructure.md §3.3, the `worker` row.
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+
+# ci-cd §5.3 requires this to exceed the longest message handler, because the
+# worker drains on SIGTERM: stop consuming, finish in-flight handlers, ack,
+# exit. Checked rather than guessed — eventa-worker/src/metrics/metrics.service.ts:20
+# buckets handler duration up to 10s and treats 10s as "something is wrong", so
+# the library's 60s is six times the slowest handler the service expects to see.
+# Raise it here, not in an environment file, if a handler ever gets slower.
+terminationGracePeriodSeconds: 60
+
+probes:
+  # §3.3: a startup probe on api and worker, to cover a cold NestJS boot before
+  # liveness starts counting. 5s × 30 from the library gives a 150s boot budget
+  # during which liveness is suspended entirely.
+  #
+  # It points at /health/live, which returns 200 as soon as the HTTP server is
+  # up: eventa-worker/src/health/liveness.ts:41 reports ok while the consumer
+  # has not attached yet ("still booting — nothing to restart"). So this probe
+  # means "the process is serving", which is exactly a startup probe's job, and
+  # the readiness probe below is what decides whether the pod is usable.
+  startup:
+    enabled: true
+  # readiness and liveness are the library defaults — GET /health/ready and GET
+  # /health/live on the `http` port — which are the endpoints eventa-worker
+  # actually serves (health.controller.ts:27,36). See README.md for why this
+  # chart does not use the exec/TCP probes §3.3's parenthetical implies.
+
+config:
+  # §5: non-secret config only, and it is committed. Credentials
+  # (DATABASE_URL, RABBITMQ_URL, REDIS_URL, SMTP_HOST/USER/PASSWORD) arrive
+  # through the ExternalSecret below; the library refuses a key here that reads
+  # like one.
+  #
+  # Only the values that must differ from eventa-worker's own validated defaults
+  # are listed. The rest — RABBITMQ_PREFETCH, IDEMPOTENCY_TTL_SECONDS, the
+  # batch and window knobs — keep the defaults in
+  # eventa-worker/src/config/env.validation.ts, because restating a default in a
+  # second place only creates two numbers that can disagree.
+  env:
+    # Pinned to the container port above so the two cannot drift; see _guards.tpl.
+    PORT: 3100
+    # The image is promoted by digest and is identical in every environment
+    # (ci-cd §3), so NODE_ENV cannot come from the build. It has to be config,
+    # and eventa-worker keys two production safety refusals off it
+    # (env.validation.ts:148, :182) — see _guards.tpl.
+    NODE_ENV: production
+    LOG_LEVEL: info
+    # The queue topology (§5 lists queue names as config). These are
+    # eventa-worker's own defaults, restated because they are a contract with
+    # eventa-relay's publisher and with the HPA selector below — the autoscaler
+    # has to watch the queue this worker actually consumes, and _guards.tpl
+    # checks that it does.
+    RABBITMQ_EXCHANGE: eventa.events
+    RABBITMQ_QUEUE: eventa.worker
+    # env.validation.ts:148 refuses to boot with EMAIL_PROVIDER=log while
+    # NODE_ENV=production: the log provider drops every message while reporting
+    # success, so sign-up would say "check your inbox" and nothing would arrive.
+    EMAIL_PROVIDER: smtp
+    # SMTP submission with STARTTLS. The application defaults SMTP_PORT to 1025
+    # (Mailpit, for a dev box — env.validation.ts:103), which reaches nothing in
+    # production. It is config and not part of the secret bundle for one
+    # reason: the NetworkPolicy egress allow below has to name the same port,
+    # and two numbers that must agree should both be readable in one file.
+    SMTP_PORT: 587
+    SMTP_SECURE: false
+  # SMS is deliberately unset. eventa-worker treats an absent SMS_PROVIDER as
+  # `off` in production and `log` on a dev box (env.validation.ts:123), and
+  # there is no SMS account for this product yet. Setting it to `twilio` needs
+  # the credentials in the secret path AND port 443 added to the egress allow
+  # below, or every text fails on a blocked connection.
+
+externalSecret:
+  # §5: the only path a secret takes into a pod. The operator materialises a
+  # Secret from the managed secrets manager at runtime and Git holds only the
+  # reference.
+  enabled: true
+  # `dataFrom` is absent on purpose. §5 gives each environment its own path
+  # (`/eventa/dev/*` … `/eventa/prod/*`), so a default here would be one
+  # environment's secrets inherited by every other one. The library fails the
+  # render when this is empty, which is the intended outcome: supply
+  # values-<env>.yaml. Least-privilege workload identity (§5) would also deny
+  # the read, but a chart should not rely on IAM to catch a values mistake.
+
+hpa:
+  # §3.2: the worker scales on CPU + RabbitMQ queue depth, minimum 2 replicas
+  # in production.
+  enabled: true
+  # This is where §3.2's "min replicas (prod) 2" lands. It is NOT `replicas`:
+  # the library omits `replicas` from the Deployment whenever an HPA exists, so
+  # that Argo CD self-heal cannot scale the workload back down mid-burst
+  # (§1.3 runs with self-heal and drift detection). A `replicas` value here
+  # would be dead config that reads as if it did something.
+  minReplicas: 2
+  # §6 requires a ceiling. 10 is the library's default, restated here because
+  # the monthly capacity review reads this number against observed headroom
+  # (devops-observability-sre.md §7.3, "Capacity review" — "Headroom vs. HPA
+  # max") and it should not have to be chased into a dependency to be reviewed.
+  maxReplicas: 10
+  # CPU target comes from the library (70%).
+  metrics:
+    # The RabbitMQ queue-depth half of §3.2's signal.
+    #
+    # `rabbitmq_queue_messages` is the exporter series whose definition is
+    # literally devops-observability-sre.md §2's "ready + unacked messages per
+    # queue", and §2 names the RabbitMQ exporter as its source. The name still
+    # has to be CONFIRMED against the Prometheus adapter an environment runs —
+    # the built-in rabbitmq_prometheus plugin calls the same quantity
+    # `rabbitmq_detailed_queue_messages` — because an external metric the
+    # adapter cannot resolve does more than report <unknown>: the HPA stops
+    # scaling IN entirely while any metric read is failing, so the worker would
+    # scale out on CPU during an on-sale and never come back down.
+    #
+    # If an environment uses a non-default vhost — previews get one each
+    # (ci-cd §1.1) — add a `vhost` label here too, or the selector sums every
+    # vhost's copy of this queue name.
+    - type: External
+      external:
+        metric:
+          name: rabbitmq_queue_messages
+          selector:
+            matchLabels:
+              queue: eventa.worker
+        target:
+          # AverageValue divides the depth by the replica count, so this reads
+          # "scale until no replica has more than 100 messages waiting". With
+          # the consumer's prefetch of 10 (env.validation.ts:21) that is ten
+          # prefetch windows of backlog per replica. A starting point in the
+          # sense §3.3 means it — re-tuned from Prometheus by the right-sizing
+          # loop in §6, not a constant.
+          type: AverageValue
+          averageValue: "100"
+
+networkPolicy:
+  # §3.3: default-deny per namespace, then explicit allows. The namespace-wide
+  # default-deny object is owned by the api chart (one release per namespace —
+  # see the _library README); this policy declares both policy types for the
+  # worker's own pods, so the worker is confined to the rules below whether or
+  # not that object exists yet.
+  #
+  # Ingress stays as the library leaves it: nothing but the metrics scrape from
+  # `platform` (§3.1). §3.3 grants ingress to web/api/checkin only, and the
+  # worker takes its work from the broker, not from a caller.
+  egress:
+    # §3.3: api/checkin/worker/relay → Postgres/Redis/RabbitMQ. All three are
+    # managed services in the private data subnets (§2), not pods, so the
+    # allows are ipBlock CIDRs supplied per environment. Redis is not
+    # incidental here — eventa-worker/src/common/idempotency/idempotency.module.ts:16
+    # holds the dedupe keys that make at-least-once delivery safe, and
+    # REDIS_URL is required to boot (env.validation.ts:13).
+    #
+    # The CIDRs themselves live in values-<env>.yaml via
+    # global.eventa.network.*Cidrs. The library fails the render when a store is
+    # enabled with no CIDR, because a NetworkPolicy rule with an empty peer list
+    # allows every destination rather than none.
+    postgres:
+      enabled: true
+    redis:
+      enabled: true
+    rabbitmq:
+      enabled: true
+    external:
+      # §3.3's "egress to Stripe/PromptPay/comms via NAT only". For the worker,
+      # comms means outbound mail: it is the service that sends confirmations,
+      # reminders and announcements (§3.2), and nodemailer dials SMTP_PORT.
+      #
+      # Only 587 is open. Payments are the api's business, not the worker's, and
+      # 443 is left shut because nothing in this image dials it today — there is
+      # no SMS provider configured and eventa-worker has no OpenTelemetry
+      # exporter in its dependencies yet. Both are one line to add when they
+      # arrive; an allow for traffic nobody sends is the opposite of §3.3's
+      # "no pod-to-pod that isn't declared".
+      enabled: true
+      ports:
+        - port: 587
+          protocol: TCP

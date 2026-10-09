@@ -1,0 +1,91 @@
+# worker — production (namespace `eventa-prod`, devops-infrastructure.md §3.1/§7).
+#
+# values.yaml already holds the production baseline, so this file carries only
+# the facts that belong to the environment rather than to the design: the pinned
+# image, the secrets-manager path, the data-subnet CIDRs, and the public mail
+# identity. Nothing here re-states a baseline number — if a value appears in
+# both files, the one here is wrong.
+
+# §7 names this environment `production`; §3.1 names its namespace
+# `eventa-prod`. The library would otherwise fall back to the namespace, so this
+# is what makes `deployment.environment` on every trace, log and metric read as
+# the environment the documents name (devops-observability-sre.md §1).
+environment: prod
+
+image:
+  # Placeholder. ci-cd §2.1 stage 11 has the bot rewrite this line on every
+  # promotion and §1.2 makes the move of this tag the promotion itself; ci-cd
+  # §3 requires it to be the immutable git SHA CI built, scanned and signed.
+  #
+  # Deliberately an all-zero SHA that no build will ever produce: a release
+  # synced before its first promotion fails to pull its image — visibly, at
+  # once — rather than quietly running whatever else is in the registry.
+  tag: sha-0000000
+
+serviceAccount:
+  # Where the workload-identity binding goes, granting this namespace's pods
+  # read access to `/eventa/prod/*` and nothing else (§5: "a dev pod cannot read
+  # prod secrets"). The annotation KEY is cloud-specific and §1.1 names the
+  # mechanism neutrally — "IRSA/workload-identity" — because no provider has
+  # been chosen, so this chart does not guess at it. Add the one your cloud
+  # uses when the Terraform `secrets` module lands; until then the External
+  # Secrets Operator falls back to its controller's own identity, which is
+  # broader than §5 allows.
+  annotations: {}
+
+externalSecret:
+  # §5: per-environment stores and paths, `/eventa/dev/*` … `/eventa/prod/*`.
+  # `extract` pulls every key at the path, so the set of secrets the worker
+  # needs is asserted in one place — eventa-worker's own env schema
+  # (src/config/env.validation.ts), which refuses to boot without DATABASE_URL,
+  # RABBITMQ_URL or REDIS_URL. Enumerating them again here would be a second
+  # list to keep in step with the first.
+  #
+  # The path holds: DATABASE_URL, RABBITMQ_URL, REDIS_URL, and the mail
+  # credentials SMTP_HOST / SMTP_USER / SMTP_PASSWORD. The host travels with the
+  # credentials because a provider issues the three together; the PORT does not,
+  # because the NetworkPolicy has to name it too (see values.yaml).
+  dataFrom:
+    - extract:
+        key: /eventa/prod/worker
+
+config:
+  env:
+    # The sender every confirmation, reminder and announcement goes out as.
+    #
+    # CONFIRM THIS BEFORE THE FIRST PRODUCTION SYNC. `eventa.co.th` is the only
+    # Eventa domain any document in eventa-docs names (06-testing/test-cases.md:503),
+    # and it is named there as test data — no deployment document states the
+    # production hostname. The address must be on the domain whose SPF and DKIM
+    # records the production mail provider actually holds, or mail is accepted
+    # by the provider, counted as sent, and junked at the recipient.
+    EMAIL_FROM: Eventa <no-reply@eventa.co.th>
+    # Links written into email: the survey link in the post-event thank-you
+    # (US-MSG-08), the tickets in a reminder, and the page a waitlist offer is
+    # paid on (US-REG-04). Optional to eventa-worker — without it the thank-you
+    # job declines to run and says why (src/config/env.validation.ts:55) —
+    # which is the right behaviour for a dev box and the wrong one here.
+    # Same caveat as EMAIL_FROM: confirm the host against public DNS.
+    PUBLIC_WEB_URL: https://eventa.co.th
+
+global:
+  eventa:
+    network:
+      # The private data subnets (§2): Postgres, Redis and RabbitMQ are managed
+      # services reachable only from the app subnets, so §3.3's allows are
+      # ipBlock CIDRs rather than pod selectors.
+      #
+      # PLACEHOLDER — replace with the Terraform network module's output for
+      # this environment. §2 puts all three stores in the data subnets, which is
+      # why one supernet covers all three here; the per-store ports in the
+      # library's defaults are what keep the three allows distinct, and the
+      # three keys stay separate so moving one store to its own subnet is a
+      # one-line change.
+      #
+      # A CIDR that is too narrow fails loudly on the first deploy — readiness
+      # cannot reach the database, so the rollout halts. One that is too broad
+      # fails silently, by granting the worker reach into the rest of the VPC.
+      # Review this against the module output, not against the last environment.
+      postgresCidrs: ["10.40.8.0/21"]
+      redisCidrs: ["10.40.8.0/21"]
+      rabbitmqCidrs: ["10.40.8.0/21"]

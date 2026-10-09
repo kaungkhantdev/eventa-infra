@@ -1,0 +1,42 @@
+# checkin — the door-scan pool: the SAME `api` image in its own Deployment and
+# HPA (devops-infrastructure.md §3.2).
+#
+# The separation is the deliverable, and it only exists because this is a
+# second Application with a second chart: a door-scanning surge at a live event
+# scales and fails here without touching the pool serving browse and checkout.
+# One tenant's on-site rush cannot starve another tenant's checkout.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  # The Application name carries the environment because all four environments'
+  # Applications live in the one `platform` namespace (§3.1); the Helm release
+  # name below deliberately does not.
+  name: eventa-dev-checkin
+  namespace: platform
+spec:
+  project: eventa-dev
+
+  source:
+    repoURL: https://github.com/kaungkhantdev/eventa-infra.git
+    targetRevision: main
+    path: deploy/charts/checkin
+    helm:
+      # Not the Application name — see ../../README.md, "Release names".
+      releaseName: checkin
+      # Helm always reads the chart's own values.yaml as the base, so only the
+      # overlay is listed. devops-infrastructure.md §1.2 makes this pair the
+      # unit of deployment, and the image tag inside the overlay is what a
+      # promotion moves — which is why there are no `helm.parameters` here.
+      valueFiles:
+        - values-dev.yaml
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: eventa-dev
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

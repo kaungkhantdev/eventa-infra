@@ -1,0 +1,38 @@
+apiVersion: v2
+name: worker
+# The RabbitMQ consumer pool from devops-infrastructure.md §3.2 — notifications,
+# calendar and indexing — plus the scheduled sweeps the same image runs
+# (order expiry, waitlist offers, scheduled announcements).
+description: Eventa worker — RabbitMQ consumers and scheduled jobs. One Deployment + HPA on CPU and RabbitMQ queue depth.
+type: application
+version: 0.1.0
+# Only a fallback for the app.kubernetes.io/version label: every deploy pins
+# image.tag to a git SHA (devops-ci-cd.md §3), which the label prefers. Tracks
+# eventa-worker/package.json so the fallback is not a different lie.
+appVersion: "0.0.1"
+
+dependencies:
+  # Probes, HPA, PDB, NetworkPolicy, ExternalSecret and the Deployment skeleton
+  # all come from here, so this chart is values plus four guards rather than a
+  # copy of the other four services' templates. devops-infrastructure.md §1.2
+  # asks for exactly that: "shared templates ... live in a common library chart
+  # to keep the four services consistent."
+  - name: eventa-library
+    version: 0.1.0
+    repository: "file://../_library"
+
+annotations:
+  # The documents this chart implements. Nothing here is a free design choice;
+  # read these before changing a value.
+  eventa.io/spec: |
+    eventa-docs/07-deployment/devops-infrastructure.md §3.1 namespaces, §3.2 workloads,
+      §3.3 resources/probes/disruption/network, §5 config and secrets, §6 scaling, §7 environments
+    eventa-docs/07-deployment/devops-ci-cd.md §4.2 rolling, §4.3 sync waves, §5.3 draining and DLQ
+    eventa-docs/08-maintenance/devops-observability-sre.md §1 metrics, §2 queue-depth and DLQ signals
+  # Where this chart contradicts the documents, and why. See README.md.
+  eventa.io/spec-deviations: |
+    devops-infrastructure.md §3.3 sends "workers/relay" to exec/TCP probes "(no HTTP server)".
+    That parenthesis is out of date for the worker: eventa-worker/src/main.ts:18 calls
+    app.listen(port) and eventa-worker/src/health/health.controller.ts:27,36 serves
+    /health/live and /health/ready. This chart uses those endpoints — see README.md
+    "The probe discrepancy".
