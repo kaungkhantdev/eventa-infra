@@ -494,3 +494,9 @@ RabbitMQ, Mailpit) plus the four services started by hand — see
 [how-services-connect.md](../eventa-docs/04-architecture/how-services-connect.md).
 Nothing in this repo is involved; the charts and the Argo CD manifests describe a
 cluster that does not exist yet.
+
+## License
+
+Proprietary — all rights reserved. This repository is public so that it can be
+read; it is not open-source software, and no right to use, copy, modify or run
+it is granted. See [LICENSE](LICENSE).
