@@ -121,22 +121,25 @@ ConfigMap, Secret and ServiceAccount, because a migration runs the same code and
 needs the same credentials; its pods carry `component: migration` so the Service
 does not route live requests to them and the PDB does not count them.
 
-`command: [npm, run, migrate]` is `eventa-api`'s only migration entry point —
-the `migrate` script in its `package.json`, which runs `drizzle-kit migrate`
-over `src/db/migrations` and tracks what it has applied, so a re-run is the no-op
-§5.1 requires.
+`command: [node, dist/db/migrate.main.js]` is `eventa-api`'s production
+migration entry point, compiled into the api image by its `Dockerfile`. It
+applies the SQL in `src/db/migrations` (copied into the image), each pending
+migration in its own transaction, and records what it has applied, so a re-run
+is the no-op §5.1 requires. `pnpm migrate`, which development and CI use, runs
+the same code through `tsx`.
 
-**One thing to carry into the image build:** `drizzle-kit` is a *devDependency*
-in `eventa-api/package.json`, so a runtime image pruned to production
-dependencies cannot run this command. Either the api image keeps its migration
-tooling, or `eventa-api` ships a compiled migration entry point for this Job to
-call. There is no Dockerfile in `eventa-api` yet, so this is a note for whoever
-writes it.
+Plain `node`, not `npm run migrate`: the production image carries production
+dependencies only — `tsx` and `drizzle-kit` are devDependencies and are not in
+it — and npm writes its logs under the home directory, which fails on this
+pod's read-only root filesystem. This is the twelve-factor admin process: a
+one-off run of the same image the release ships, with the same config and
+secrets. Locally it is
+`docker run --rm --env-file … eventa-api node dist/db/migrate.main.js`.
 
 §5.1 also asks for a lock timeout and a statement timeout. Those belong in the
 migration's own database session, which this chart cannot reach — the connection
-string arrives from the secrets manager (§5) and `drizzle-kit` opens it
-directly. What the chart bounds is the Job: `activeDeadlineSeconds`, so a
+string arrives from the secrets manager (§5) and the migration entry point opens
+it directly. What the chart bounds is the Job: `activeDeadlineSeconds`, so a
 migration blocked on a lock fails the gate instead of holding the deploy open.
 
 ## Values layout

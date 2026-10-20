@@ -66,9 +66,9 @@ whose non-zero exit halts the sync.
 
 Enabling it here produces a second one, `Job/{{ .job }}` in namespace
 `{{ .namespace }}`, alongside the api release's own. The two land in the same
-PreSync phase of the same wave, run the same `drizzle-kit migrate` from the
-same image (eventa-api/package.json), and start at the same moment against the
-same database.
+PreSync phase of the same wave, run the same migration entry point
+(`node dist/db/migrate.main.js`) from the same image, and start at the same
+moment against the same database.
 
 §5.1's idempotency guarantee does not cover that. Re-running a migration is a
 no-op because it is recorded in the migrations ledger — AFTER it has been

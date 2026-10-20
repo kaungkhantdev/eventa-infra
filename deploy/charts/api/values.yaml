@@ -514,25 +514,32 @@ ingress:
 # pod ever starts against an un-migrated schema.
 migrationJob:
   enabled: true
-  # eventa-api's only migration entry point: `migrate` in its package.json runs
-  # `drizzle-kit migrate`, which applies the SQL in src/db/migrations and tracks
-  # what it has applied, so a re-run is the no-op §5.1 requires.
+  # eventa-api's production migration entry point, compiled into the api image
+  # by its Dockerfile (eventa-api/src/db/migrate.main.ts → dist/db/migrate.main.js).
+  # It applies the SQL in the image's src/db/migrations, each pending migration
+  # in its own transaction, and records what it has applied, so a re-run is the
+  # no-op §5.1 requires. It is the same code `pnpm migrate` runs in development
+  # and CI — one implementation, two entry points.
   #
-  # One consequence to carry into the image build: drizzle-kit is a
-  # devDependency in eventa-api/package.json, so a runtime image pruned to
-  # production dependencies cannot run this. The api image has to keep its
-  # migration tooling, or eventa-api has to ship a compiled migration entry
-  # point for this Job to call instead. There is no Dockerfile in eventa-api
-  # yet, so this is a note for whoever writes it rather than a decision made
-  # here.
+  # Plain `node`, deliberately — not `npm run migrate` or `pnpm migrate`:
+  #   - the production image holds production dependencies only, and the
+  #     TypeScript runner (tsx) and drizzle-kit behind `pnpm migrate` are
+  #     devDependencies, so neither is in it;
+  #   - npm writes its logs and cache under the home directory, which fails on
+  #     this pod's read-only root filesystem (the library's securityContext),
+  #     and a package-manager wrapper would sit between the kubelet's SIGTERM
+  #     and the node process.
+  # The path is relative to the image's WORKDIR (/app); the Job sets no
+  # workingDir, so the image's applies. A twelve-factor admin process: a
+  # one-off run of the same image, with the same config and secrets, as the
+  # release it migrates for.
   command:
-    - npm
-    - run
-    - migrate
+    - node
+    - dist/db/migrate.main.js
   # §5.1 also asks for a lock timeout and a statement timeout so a migration
   # cannot sit holding a long table lock. Those belong in the migration's own
   # session, which this chart cannot reach: the connection string arrives from
-  # the secrets manager (§5) and drizzle-kit opens it directly. What the chart
-  # can bound is the whole Job — activeDeadlineSeconds, from the library — so a
-  # migration blocked on a lock fails the gate instead of holding the deploy
-  # open indefinitely.
+  # the secrets manager (§5) and the migration entry point opens it directly.
+  # What the chart can bound is the whole Job — activeDeadlineSeconds, from the
+  # library — so a migration blocked on a lock fails the gate instead of
+  # holding the deploy open indefinitely.

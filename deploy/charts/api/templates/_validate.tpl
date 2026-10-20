@@ -107,7 +107,7 @@ so it runs on every template this chart renders.
 {{- fail (printf "[api] migrationJob.enabled is false while deploying to %s. eventa-api owns every migration (eventa-infra/README.md), and devops-ci-cd.md §5.1 runs them as a PreSync Job in sync wave 1 so that new pods never start against an un-migrated schema. With the Job off, the api rolls first and fails on its first query against a table that does not exist yet — and worker and relay, whose typed mirrors fail on write rather than on read (§5.3), fail later and in production." $ns) -}}
 {{- end -}}
 {{- if and $v.migrationJob.enabled (not $v.migrationJob.command) (not $v.migrationJob.args) -}}
-{{- fail "[api] migrationJob.enabled is true but neither command nor args is set, so the Job runs the image's default entrypoint — which starts the API server. A long-running server as a PreSync hook never exits 0, so Argo CD waits on it and the sync hangs instead of deploying. eventa-api's migration entry point is the `migrate` script in its package.json." -}}
+{{- fail "[api] migrationJob.enabled is true but neither command nor args is set, so the Job runs the image's default entrypoint — which starts the API server. A long-running server as a PreSync hook never exits 0, so Argo CD waits on it and the sync hangs instead of deploying. eventa-api's migration entry point in its production image is `node dist/db/migrate.main.js`." -}}
 {{- end -}}
 {{- /*
   The other half of "never inside app startup": a chart that enables the Job and

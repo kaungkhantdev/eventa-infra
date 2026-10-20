@@ -134,8 +134,8 @@ metrics:
 # server) plus broker-connection health", and devops-ci-cd.md §4.3 says the
 # relay's check is that "it can read the outbox and reach RabbitMQ". That is
 # exactly the right probe. eventa-relay does not ship it: there is no health
-# module, no CLI entrypoint and no second binary in the image — `pnpm
-# start:prod` is `node dist/main` and nothing else.
+# module, no CLI entrypoint and no second binary in the image — its command
+# (eventa-relay/Dockerfile) is `node dist/main` and nothing else.
 #
 # A TCP probe is impossible (nothing listens). An exec probe needs a command
 # that exists, and the two tempting substitutes are both worse than no probe:
