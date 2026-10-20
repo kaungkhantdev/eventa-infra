@@ -101,7 +101,7 @@ pdb:
 # ---------------------------------------------------------------------------
 # No listening socket
 # ---------------------------------------------------------------------------
-# eventa-relay/src/main.ts:24 calls `NestFactory.createApplicationContext` — an
+# eventa-relay/src/main.ts:20 calls `NestFactory.createApplicationContext` — an
 # application context, not an HTTP server. There is no `listen`, no controller
 # and no port anywhere in eventa-relay/src, so the pod binds nothing. Declaring
 # a container port here would be a claim about the process that is simply false,
@@ -177,8 +177,9 @@ probes:
     enabled: false
 
 # devops-ci-cd.md §5.3 requires this to exceed the longest handler, because the
-# relay drains on SIGTERM. eventa-relay/src/main.ts:47-50 clears the poll timer
-# and closes the app, which closes the AMQP channel and ends the pg pool
+# relay drains on SIGTERM. Nest's shutdown hooks, which eventa-relay/src/main.ts
+# enables, close the app once: the poller clears its timer
+# (relay/outbox-poller.ts), the AMQP channel closes and the pg pool ends
 # (rabbit-publisher.ts:84, database.module.ts:36). The bound is one in-flight
 # pass: up to OUTBOX_BATCH publishes, each a `waitForConfirms` plus an UPDATE.
 #

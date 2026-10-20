@@ -143,7 +143,7 @@ in opposite directions. The library supports all three handler types and takes
 no position; both charts state their own and say why.
 
 - **The relay ships no probes at all.** It is an application context with no
-  HTTP server (`eventa-relay/src/main.ts:24` calls
+  HTTP server (`eventa-relay/src/main.ts:20` calls
   `NestFactory.createApplicationContext`), so the parenthetical is right about
   it — but the prescription is not implementable: TCP has nothing to connect to,
   and the `exec` health command the sentence implies is not in the image. **Do
@@ -344,7 +344,7 @@ Verified in the source rather than taken from the table:
 
 - `eventa-relay/src/relay/outbox-reader.repository.ts:25` selects pending rows
   on `isNull(outboxEvents.publishedAt)` with no `FOR UPDATE SKIP LOCKED`.
-- `eventa-relay/src/main.ts:20` states the precondition directly: "Scaling this
+- `eventa-relay/src/main.ts:17` states the precondition directly: "Scaling this
   safely needs `FOR UPDATE SKIP LOCKED` in the reader first."
 
 With two replicas both readers select the same rows and publish every message
@@ -437,7 +437,7 @@ terminationGracePeriodSeconds: 60    # bounds one in-flight pass (ci-cd §5.3)
 Three of those need the reason, because the plausible-looking alternative is
 actively wrong:
 
-- **`ports: []` and `metrics.enabled: false`.** `eventa-relay/src/main.ts:24`
+- **`ports: []` and `metrics.enabled: false`.** `eventa-relay/src/main.ts:20`
   calls `NestFactory.createApplicationContext` — there is no `listen`, no
   controller and no port anywhere in `eventa-relay/src`. Declaring a
   `containerPort` would be a false claim about the process in the one place

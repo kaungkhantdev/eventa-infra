@@ -19,8 +19,9 @@ config:
     # The one behavioural difference between dev and production for this
     # workload. §5 lists log level as per-environment ConfigMap config, and the
     # relay logs a line per non-empty poll at `info`
-    # (eventa-relay/src/main.ts:37); at `debug` a developer chasing a stuck
-    # event can see the ticks that found nothing, which is the interesting case.
+    # (eventa-relay/src/relay/outbox-poller.ts:47); at `debug` a developer
+    # chasing a stuck event can see the ticks that found nothing, which is the
+    # interesting case.
     LOG_LEVEL: debug
 
 externalSecret:

@@ -28,7 +28,7 @@ spec:
     The relay's outbox reader takes no row lock —
     eventa-relay/src/relay/outbox-reader.repository.ts:25 selects pending rows
     on `isNull(publishedAt)` with no `FOR UPDATE SKIP LOCKED`, and
-    eventa-relay/src/main.ts:20 states that scaling it safely needs that lock
+    eventa-relay/src/main.ts:17 states that scaling it safely needs that lock
     first. A second replica selects the same rows and publishes every message
     twice; consumers dedupe on message id only AFTER the first copy completes,
     so both concurrent copies are handled and one registration sends the buyer

@@ -366,7 +366,7 @@ The relay's outbox reader takes no row lock. Verified in the source, not assumed
       selects pending rows on `isNull(outboxEvents.publishedAt)` with no
       `FOR UPDATE SKIP LOCKED`.
 
-  eventa-relay/src/main.ts:20
+  eventa-relay/src/main.ts:17
       "Scaling this safely needs `FOR UPDATE SKIP LOCKED` in the reader first."
 
 With two replicas both readers select the same rows and publish every message
@@ -394,7 +394,7 @@ the second replica that must not exist.
 
 The reason is the reader, not a table. Until `FOR UPDATE SKIP LOCKED` lands in
 eventa-relay/src/relay/outbox-reader.repository.ts:25, a second replica
-double-publishes every outbox row (see eventa-relay/src/main.ts:20), so the
+double-publishes every outbox row (see eventa-relay/src/main.ts:17), so the
 relay ships with no HPA at all. devops-infrastructure.md says the same:
 §3.2 gives the relay the scaling signal "None — no HPA", §6's Pods row reads
 "HPA per service, except the singleton `relay` which has none", and §6's

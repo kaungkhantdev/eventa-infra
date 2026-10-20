@@ -308,7 +308,7 @@ was never the document.** It is the reader:
 | Evidence | What it says |
 | --- | --- |
 | [`eventa-relay/src/relay/outbox-reader.repository.ts:25`](../eventa-relay/src/relay/outbox-reader.repository.ts) | `fetchBatch` selects pending rows on `isNull(outboxEvents.publishedAt)`. There is no `FOR UPDATE SKIP LOCKED`, so two readers polling at the same time return the **same rows**. |
-| [`eventa-relay/src/main.ts:20`](../eventa-relay/src/main.ts) | "Scaling this safely needs `FOR UPDATE SKIP LOCKED` in the reader first." |
+| [`eventa-relay/src/main.ts:17`](../eventa-relay/src/main.ts) | "Scaling this safely needs `FOR UPDATE SKIP LOCKED` in the reader first." |
 
 A second replica double-publishes every outbox message: both select the row, both
 publish it, both mark it published. Consumers dedupe on message id but only
@@ -327,7 +327,7 @@ it was not true.
 
 1. Land `FOR UPDATE SKIP LOCKED` in
    `eventa-relay/src/relay/outbox-reader.repository.ts` so concurrent readers
-   claim disjoint rows, and remove the warning at `eventa-relay/src/main.ts:15-20`.
+   claim disjoint rows, and remove the warning at `eventa-relay/src/main.ts:12-17`.
 2. Delete `deploy/charts/relay/templates/_guard.tpl` and the `singleton` block
    from `deploy/charts/relay/values.yaml` in the same change, so the chart and the
    code stop disagreeing at the same commit.
@@ -352,7 +352,7 @@ carried over from the last time this table was written.
 
 | # | Deviation | What the document says | Why the chart differs |
 | --- | --- | --- | --- |
-| 1 | **relay serves no `/metrics`** | `devops-observability-sre.md` §1: "all 5 workloads via `/metrics`" | `eventa-relay/src/main.ts:24` creates an application *context* — no `listen`, no controller, no port, so there is nothing to scrape. §2 anticipates this and sources outbox lag from a "relay gauge / **DB query exporter**", which is the better signal anyway because it still reports when the relay is gone. |
+| 1 | **relay serves no `/metrics`** | `devops-observability-sre.md` §1: "all 5 workloads via `/metrics`" | `eventa-relay/src/main.ts:20` creates an application *context* — no `listen`, no controller, no port, so there is nothing to scrape. §2 anticipates this and sources outbox lag from a "relay gauge / **DB query exporter**", which is the better signal anyway because it still reports when the relay is gone. |
 | 2 | **relay ships no probes** | §3.3: "Workers/relay use exec/TCP checks … plus broker-connection health"; `devops-ci-cd.md` §4.3: "every workload defines `startup`, `readiness`, `liveness`" | That is the right probe and `eventa-relay` does not have it: no health module, no CLI entrypoint, no second binary. TCP has nothing to connect to. With `maxSurge: 0`, an `exec` probe pointed at an absent command would leave **zero** publishers on every deploy. |
 | 3 | **relay has no Redis egress** | §3.3 groups "api/checkin/worker/relay → Postgres/Redis/RabbitMQ" | `eventa-relay`'s env schema has no `REDIS_URL` and the service holds no cache, session or idempotency state (`src/config/env.validation.ts:11-27`). §3.3's own rule is that nothing undeclared is permitted. |
 | 4 | **worker uses HTTP probes, not exec/TCP** | the same §3.3 sentence's "(no HTTP server)" | Out of date for the worker: `eventa-worker/src/main.ts:18` calls `app.listen(port)` and `src/health/health.controller.ts:27,36` serves `/health/live` and `/health/ready`, with liveness reporting "attached to the queue" — which is the broker-connection health the same sentence asks for. **The parenthetical is wrong.** |

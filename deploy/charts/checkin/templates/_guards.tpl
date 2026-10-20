@@ -110,7 +110,7 @@ cleanly and a dashboard still shows two Deployments.
 That setting belongs to the `relay` chart and to nothing else. The relay is
 pinned to one replica because its outbox reader takes no row lock
 (eventa-relay/src/relay/outbox-reader.repository.ts:25, and
-eventa-relay/src/main.ts:20 states the precondition), so a second replica
+eventa-relay/src/main.ts:17 states the precondition), so a second replica
 publishes every message twice.
 
 Nothing about the check-in pool has that constraint, and the guard does three

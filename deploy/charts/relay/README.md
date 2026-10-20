@@ -63,7 +63,7 @@ Verified in the source rather than taken on trust:
 | Where | What it says |
 | --- | --- |
 | `eventa-relay/src/relay/outbox-reader.repository.ts:25` | `fetchBatch` selects pending rows on `isNull(outboxEvents.publishedAt)`, ordered by id. No `FOR UPDATE SKIP LOCKED`. |
-| `eventa-relay/src/main.ts:20` | "Scaling this safely needs `FOR UPDATE SKIP LOCKED` in the reader first." |
+| `eventa-relay/src/main.ts:17` | "Scaling this safely needs `FOR UPDATE SKIP LOCKED` in the reader first." |
 | `eventa-relay/README.md:22-31` | "Run exactly one replica … Until then the deployment must pin `replicas: 1`." |
 
 Two replicas polling at the same time therefore select the **same** rows, and
@@ -98,7 +98,7 @@ is the double publish.
 ## What the chart does *not* render, and why
 
 The relay is an application **context**, not a server:
-`eventa-relay/src/main.ts:24` calls `NestFactory.createApplicationContext`, and
+`eventa-relay/src/main.ts:20` calls `NestFactory.createApplicationContext`, and
 there is no `listen`, no controller and no port anywhere in `eventa-relay/src`.
 Three consequences follow, and all three are deliberate rather than omissions.
 

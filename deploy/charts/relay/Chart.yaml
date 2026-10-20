@@ -55,7 +55,7 @@ annotations:
   eventa.io/spec-deviations: |
     1. NO /metrics — the image cannot serve it.
        devops-observability-sre.md §1 scrapes all 5 workloads via /metrics.
-       eventa-relay/src/main.ts:24 creates an application context, not a server:
+       eventa-relay/src/main.ts:20 creates an application context, not a server:
        there is no listen, no controller and no port, so there is nothing to
        scrape. §2 anticipates this and sources outbox lag from a "relay gauge /
        DB query exporter" instead.

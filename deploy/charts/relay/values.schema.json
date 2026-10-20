@@ -367,7 +367,7 @@
       "type": "string"
     },
     "ports": {
-      "description": "Named container ports. Probes, the Service and the metrics scrape all address them by name. THE ONE DIVERGENCE from _library/values.contract.schema.json, which sets minItems: 1: the relay binds no socket at all. eventa-relay/src/main.ts:24 builds an application context rather than an HTTP server, and there is no listen, controller or port anywhere in eventa-relay/src, so the honest value is the empty list and the contract's floor of one port cannot hold here.",
+      "description": "Named container ports. Probes, the Service and the metrics scrape all address them by name. THE ONE DIVERGENCE from _library/values.contract.schema.json, which sets minItems: 1: the relay binds no socket at all. eventa-relay/src/main.ts:20 builds an application context rather than an HTTP server, and there is no listen, controller or port anywhere in eventa-relay/src, so the honest value is the empty list and the contract's floor of one port cannot hold here.",
       "type": "array",
       "minItems": 0,
       "items": {

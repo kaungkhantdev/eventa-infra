@@ -100,7 +100,7 @@ The reader takes no row lock. Verified in the source, not assumed:
       and orders by id. There is no `FOR UPDATE SKIP LOCKED`, so two readers
       polling at the same time return the SAME rows.
 
-  eventa-relay/src/main.ts:20
+  eventa-relay/src/main.ts:17
       "Scaling this safely needs `FOR UPDATE SKIP LOCKED` in the reader first."
 
   eventa-relay/README.md:22-31
@@ -128,7 +128,7 @@ HOW TO LIFT IT, in this order and not before:
   1. Land `FOR UPDATE SKIP LOCKED` in
      eventa-relay/src/relay/outbox-reader.repository.ts, so concurrent readers
      claim disjoint rows, and remove the warning in
-     eventa-relay/src/main.ts:15-20.
+     eventa-relay/src/main.ts:12-17.
   2. Delete this guard and the `singleton` block from values.yaml in the same
      change, so the chart and the code stop disagreeing at the same commit.
   3. Only then raise `replicas` (and add the HPA on outbox lag, which §3.2
